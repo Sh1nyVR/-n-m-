@@ -16,6 +16,7 @@ const firebaseConfig = {
 let database;
 let auth;
 let authReadyPromise = null;
+let lastAuthError = null;
 
 function initFirebase() {
     if (typeof firebase === 'undefined') {
@@ -36,9 +37,11 @@ async function ensureFirebaseAuth() {
     if (!auth) return true;
     if (auth.currentUser) return true;
     if (!authReadyPromise) {
+        lastAuthError = null;
         authReadyPromise = auth.signInAnonymously()
             .then(() => true)
             .catch((e) => {
+                lastAuthError = e || null;
                 console.error('Anonymous auth failed:', e);
                 return false;
             });
@@ -216,7 +219,8 @@ const multiplayer = {
         }
         const authOk = await ensureFirebaseAuth();
         if (!authOk) {
-            throw new Error('Firebase Auth anonymous sign-in failed. Enable Firebase Authentication and the Anonymous provider, or relax Realtime Database rules for testing.');
+            const detail = (lastAuthError && (lastAuthError.code || lastAuthError.message)) ? ` (${lastAuthError.code || lastAuthError.message})` : '';
+            throw new Error(`Firebase Auth anonymous sign-in failed${detail}. Enable Firebase Authentication and the Anonymous provider, or relax Realtime Database rules for testing.`);
         }
         this.cleanupStaleLobbies().catch(() => {});
         if (this.lobbyId) {
@@ -241,6 +245,7 @@ const multiplayer = {
             createdAt: Date.now(),
             gameStarted: false,
             hostOnlyLevelExit: false,
+            friendlyFire: false,
             persistEmptyLobby: false,
             players: {}
         };
@@ -301,7 +306,8 @@ const multiplayer = {
         }
         const authOk = await ensureFirebaseAuth();
         if (!authOk) {
-            throw new Error('Firebase Auth anonymous sign-in failed. Enable Firebase Authentication and the Anonymous provider, or relax Realtime Database rules for testing.');
+            const detail = (lastAuthError && (lastAuthError.code || lastAuthError.message)) ? ` (${lastAuthError.code || lastAuthError.message})` : '';
+            throw new Error(`Firebase Auth anonymous sign-in failed${detail}. Enable Firebase Authentication and the Anonymous provider, or relax Realtime Database rules for testing.`);
         }
         this.cleanupStaleLobbies().catch(() => {});
         if (this.lobbyId && this.lobbyId !== lobbyId) {
@@ -373,7 +379,8 @@ const multiplayer = {
     async getPublicLobbies() {
         const authOk = await ensureFirebaseAuth();
         if (!authOk) {
-            throw new Error('Firebase Auth anonymous sign-in failed. Enable Firebase Authentication and the Anonymous provider, or relax Realtime Database rules for testing.');
+            const detail = (lastAuthError && (lastAuthError.code || lastAuthError.message)) ? ` (${lastAuthError.code || lastAuthError.message})` : '';
+            throw new Error(`Firebase Auth anonymous sign-in failed${detail}. Enable Firebase Authentication and the Anonymous provider, or relax Realtime Database rules for testing.`);
         }
         const now = Date.now();
         const staleCutoff = now - (1000 * 60 * 60 * 12); // 12 hours

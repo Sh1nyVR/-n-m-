@@ -235,36 +235,53 @@ const multiplayerUI = {
 
     // Create lobby
     async createLobby() {
-        const lobbyName = document.getElementById('mp-lobby-name').value.trim() || `${multiplayer.settings.name}'s Lobby`;
-        const isPrivate = document.getElementById('mp-private').checked;
-        const password = isPrivate ? document.getElementById('mp-password').value : null;
-        const gameMode = document.getElementById('mp-gamemode').value;
-        const hostOnlyExit = document.getElementById('mp-host-only-exit').checked;
-        const friendlyFire = document.getElementById('mp-friendly-fire').checked;
-
-        if (isPrivate && !password) {
-            alert('Please enter a password for private lobby');
-            return;
-        }
-
-        this.closeCreateLobby();
-        this.close();
-
-        // Create lobby WITHOUT starting game
         try {
-            const lobbyId = await multiplayer.createLobby(isPrivate, password, gameMode, lobbyName);
+            const lobbyNameEl = document.getElementById('mp-lobby-name');
+            const isPrivateEl = document.getElementById('mp-private');
+            const passwordEl = document.getElementById('mp-password');
+            const gameModeEl = document.getElementById('mp-gamemode');
+            const hostOnlyExitEl = document.getElementById('mp-host-only-exit');
+            const friendlyFireEl = document.getElementById('mp-friendly-fire');
 
-            // Set host-only exit if enabled
-            if (hostOnlyExit) {
-                await multiplayer.setHostOnlyLevelExit(true);
+            if (!lobbyNameEl || !isPrivateEl || !gameModeEl || !hostOnlyExitEl || !friendlyFireEl) {
+                throw new Error('Create lobby UI not ready. Please reopen the multiplayer menu.');
             }
 
-            // Set friendly fire setting
-            await multiplayer.setFriendlyFire(friendlyFire);
+            const lobbyName = lobbyNameEl.value.trim() || `${multiplayer.settings.name}'s Lobby`;
+            const isPrivate = isPrivateEl.checked;
+            const password = (isPrivate && passwordEl) ? passwordEl.value : null;
+            const gameMode = gameModeEl.value;
+            const hostOnlyExit = hostOnlyExitEl.checked;
+            const friendlyFire = friendlyFireEl.checked;
+
+            if (isPrivate && !password) {
+                alert('Please enter a password for private lobby');
+                return;
+            }
+
+            this.closeCreateLobby();
+            this.close();
+
+            // Create lobby WITHOUT starting game
+            const lobbyId = await multiplayer.createLobby(isPrivate, password, gameMode, lobbyName);
+
+            // Optional post-create settings (should not block entering lobby room).
+            if (hostOnlyExit) {
+                await multiplayer.setHostOnlyLevelExit(true).catch((e) => {
+                    console.warn('Failed to set host-only level exit:', e);
+                });
+            }
+
+            if (friendlyFire) {
+                await multiplayer.setFriendlyFire(true).catch((e) => {
+                    console.warn('Failed to set friendly fire:', e);
+                });
+            }
 
             // Show lobby waiting room
             this.showLobbyRoom(lobbyId, isPrivate, password, gameMode);
         } catch (error) {
+            console.error('createLobby UI flow failed:', error);
             alert('Failed to create lobby: ' + error.message);
         }
     },
