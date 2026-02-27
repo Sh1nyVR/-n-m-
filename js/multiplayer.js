@@ -2647,6 +2647,7 @@ const multiplayer = {
         
         // Generate unique network ID for this powerup
         const networkId = `${this.playerId}_${this.powerupIdCounter++}`;
+        powerup.networkId = networkId;
         this.localPowerupIds.set(powerupIndex, networkId);
         this.networkPowerups.set(networkId, powerupIndex); // Add reverse mapping for host's own powerups
         
@@ -2695,6 +2696,23 @@ const multiplayer = {
                 break;
             }
         }
+        this.networkPowerups.delete(networkId);
+    },
+
+    // Called whenever local code removes a powerup from powerUp[] via splice.
+    // Keeps index-based maps aligned to avoid pickup/remove desync.
+    notifyLocalPowerupRemoved(removedIndex, removedNetworkId = null) {
+        if (!this.enabled) return;
+
+        let networkId = removedNetworkId;
+        if (!networkId && this.localPowerupIds.has(removedIndex)) {
+            networkId = this.localPowerupIds.get(removedIndex);
+        }
+        if (networkId) {
+            this.networkPowerups.delete(networkId);
+            this.localPowerupIds.delete(removedIndex);
+        }
+        this.updatePowerupMappingsAfterRemoval(removedIndex);
     },
     
     // Listen for powerup events from other players
@@ -2708,6 +2726,7 @@ const multiplayer = {
             const powerupData = snapshot.val();
             if (!powerupData) return;
             if (powerupData.spawnedBy === this.playerId) return; // Ignore own spawns
+            if (this.networkPowerups.has(powerupData.id)) return; // Already tracked
             
             this.handleRemotePowerupSpawn(powerupData);
         };
@@ -2716,11 +2735,6 @@ const multiplayer = {
         const onPowerupRemoved = (snapshot) => {
             const powerupData = snapshot.val();
             if (!powerupData) return;
-            // Don't process removal if we don't have this powerup locally
-            if (!this.networkPowerups.has(powerupData.id)) {
-                console.log('Ignoring powerup removal - not in local map:', powerupData.id);
-                return;
-            }
             this.handleRemotePowerupPickup(powerupData);
         };
 
@@ -2821,12 +2835,22 @@ const multiplayer = {
         });
         mref.locatePlayer && mref.locatePlayer();
     },
-    
     // Handle remote powerup spawn
     handleRemotePowerupSpawn(powerupData) {
         if (typeof powerUp === 'undefined' || typeof powerUps === 'undefined') return;
+        if (!powerupData || !powerupData.id || !powerupData.position) return;
         
         console.log('Remote powerup spawned:', powerupData.name, 'at', powerupData.position.x, powerupData.position.y);
+        
+        // Prevent duplicate local spawn for the same network powerup
+        if (this.networkPowerups.has(powerupData.id)) return;
+        for (let i = 0; i < powerUp.length; i++) {
+            if (powerUp[i] && powerUp[i].networkId === powerupData.id) {
+                this.localPowerupIds.set(i, powerupData.id);
+                this.networkPowerups.set(powerupData.id, i);
+                return;
+            }
+        }
         
         // Spawn the powerup locally
         const index = powerUp.length;
@@ -2858,13 +2882,9 @@ const multiplayer = {
             }
         );
         
-        // Set velocity
         Matter.Body.setVelocity(powerUp[index], powerupData.velocity);
-        
-        // Add to world
+        powerUp[index].networkId = powerupData.id;
         Matter.World.add(engine.world, powerUp[index]);
-        
-        // Store network ID mapping
         this.localPowerupIds.set(index, powerupData.id);
         this.networkPowerups.set(powerupData.id, index);
     },
@@ -2872,36 +2892,49 @@ const multiplayer = {
     // Handle remote powerup pickup
     handleRemotePowerupPickup(powerupData) {
         if (typeof powerUp === 'undefined') return;
+        console.log('Remote powerup picked up:', powerupData.id, 'Looking for local index...');
         
-        console.log('🗑️ Remote powerup picked up:', powerupData.id, 'Looking for local index...');
-        
-        // Find the local powerup with this network ID
-        const localIndex = this.networkPowerups.get(powerupData.id);
-        if (localIndex === undefined) {
-            console.log('⚠️ Powerup not found in networkPowerups map. Available:', Array.from(this.networkPowerups.keys()));
+        let localIndex = this.networkPowerups.get(powerupData.id);
+        if (localIndex === undefined || !powerUp[localIndex]) {
+            for (let i = 0; i < powerUp.length; i++) {
+                if (powerUp[i] && powerUp[i].networkId === powerupData.id) {
+                    localIndex = i;
+                    this.localPowerupIds.set(i, powerupData.id);
+                    this.networkPowerups.set(powerupData.id, i);
+                    break;
+                }
+            }
+        }
+        if ((localIndex === undefined || !powerUp[localIndex]) && powerupData.position) {
+            let bestIdx = -1;
+            let bestD2 = Infinity;
+            for (let i = 0; i < powerUp.length; i++) {
+                const p = powerUp[i];
+                if (!p || !p.position) continue;
+                if (powerupData.name && p.name && p.name !== powerupData.name) continue;
+                if (isFinite(powerupData.size) && isFinite(p.size) && Math.abs(p.size - powerupData.size) > 0.25) continue;
+                const dx = p.position.x - powerupData.position.x;
+                const dy = p.position.y - powerupData.position.y;
+                const d2 = dx * dx + dy * dy;
+                if (d2 < bestD2) { bestD2 = d2; bestIdx = i; }
+            }
+            if (bestIdx >= 0 && bestD2 < 200 * 200) {
+                localIndex = bestIdx;
+                this.localPowerupIds.set(bestIdx, powerupData.id);
+                this.networkPowerups.set(powerupData.id, bestIdx);
+            }
+        }
+        if (localIndex === undefined || !powerUp[localIndex]) {
+            console.log('Powerup not found locally for removal:', powerupData.id);
+            this.networkPowerups.delete(powerupData.id);
             return;
         }
         
-        console.log('✅ Found powerup at local index:', localIndex, 'Removing...');
-        
-        // Remove the powerup locally
-        if (powerUp[localIndex]) {
-            // Safety check: ensure the powerup object is valid before removing
-            if (powerUp[localIndex].type) {
-                Matter.World.remove(engine.world, powerUp[localIndex]);
-            }
-            powerUp.splice(localIndex, 1);
-            
-            // Update all mappings after splice
-            this.updatePowerupMappingsAfterRemoval(localIndex);
-            
-            console.log('✅ Powerup removed successfully');
-        } else {
-            console.log('⚠️ Powerup at index', localIndex, 'is undefined, skipping Matter.World.remove');
+        if (powerUp[localIndex] && powerUp[localIndex].type) {
+            Matter.World.remove(engine.world, powerUp[localIndex]);
         }
-        
-        // Clean up network mapping
-        this.networkPowerups.delete(powerupData.id);
+        powerUp.splice(localIndex, 1);
+        this.notifyLocalPowerupRemoved(localIndex, powerupData.id);
     },
     
     // Update powerup index mappings after array splice
@@ -2986,8 +3019,16 @@ const multiplayer = {
                         fill: m.fill || '#735084',
                         stroke: m.stroke || '#000000',
                         seePlayerYes: m.seePlayer ? m.seePlayer.yes : false,
+                        seePlayerRecall: m.seePlayer ? m.seePlayer.recall : false,
                         targetX: (m.seePlayer && m.seePlayer.yes && m.seePlayer.position) ? m.seePlayer.position.x : null,
                         targetY: (m.seePlayer && m.seePlayer.yes && m.seePlayer.position) ? m.seePlayer.position.y : null,
+                        showHealthBar: m.showHealthBar !== false,
+                        maxHealth: isFinite(m.maxHealth) ? m.maxHealth : 1,
+                        shield: !!m.shield,
+                        isShielded: !!m.isShielded,
+                        isBoss: !!m.isBoss,
+                        isDropPowerUp: !!m.isDropPowerUp,
+                        isExtraShield: !!m.isExtraShield,
                         // ALWAYS send vertices so clients can render correct shapes
                         verts: (m.vertices && m.vertices.length >= 3) ? m.vertices.map(v => ({ x: v.x, y: v.y })) : null
                     });
@@ -3214,7 +3255,19 @@ const multiplayer = {
                 if (mobData.netId) {
                     if (this.mobIndexByNetId.has(mobData.netId)) {
                         targetIndex = this.mobIndexByNetId.get(mobData.netId);
-                        mobExists = mob[targetIndex] !== undefined;
+                        mobExists = mob[targetIndex] !== undefined && mob[targetIndex] && mob[targetIndex].netId === mobData.netId;
+                    }
+                    // Mapping can go stale when mob array reorders (shields/orbitals can unshift/swap).
+                    // Fall back to direct scan by netId and repair the map.
+                    if (!mobExists) {
+                        for (let i = 0; i < mob.length; i++) {
+                            if (mob[i] && mob[i].netId === mobData.netId) {
+                                targetIndex = i;
+                                mobExists = true;
+                                this.mobIndexByNetId.set(mobData.netId, i);
+                                break;
+                            }
+                        }
                     }
                 }
                 
@@ -3231,6 +3284,10 @@ const multiplayer = {
                 
                 if (mobExists && targetIndex !== null && mob[targetIndex]) {
                     const bodyRef = mob[targetIndex];
+                    if (mobData.netId) {
+                        bodyRef.netId = mobData.netId;
+                        this.mobIndexByNetId.set(mobData.netId, targetIndex);
+                    }
                     // Smooth interpolation for position/angle
                     const target = { x: mobData.x, y: mobData.y, angle: mobData.angle };
                     const cur = bodyRef.position;
@@ -3271,14 +3328,24 @@ const multiplayer = {
                         }
                     }
                     if (mobData.health !== undefined) mob[targetIndex].health = mobData.health;
+                    if (mobData.maxHealth !== undefined) mob[targetIndex].maxHealth = mobData.maxHealth;
                     // Update visual properties
                     if (mobData.fill) mob[targetIndex].fill = mobData.fill;
                     if (mobData.stroke) mob[targetIndex].stroke = mobData.stroke;
                     if (mobData.radius) mob[targetIndex].radius = mobData.radius;
+                    if (mobData.showHealthBar !== undefined) mob[targetIndex].showHealthBar = !!mobData.showHealthBar;
+                    if (mobData.shield !== undefined) mob[targetIndex].shield = !!mobData.shield;
+                    if (mobData.isShielded !== undefined) mob[targetIndex].isShielded = !!mobData.isShielded;
+                    if (mobData.isBoss !== undefined) mob[targetIndex].isBoss = !!mobData.isBoss;
+                    if (mobData.isDropPowerUp !== undefined) mob[targetIndex].isDropPowerUp = !!mobData.isDropPowerUp;
+                    if (mobData.isExtraShield !== undefined) mob[targetIndex].isExtraShield = !!mobData.isExtraShield;
                     // Sync targeting data
                     if (mob[targetIndex].seePlayer) {
                         mob[targetIndex].seePlayer.yes = mobData.seePlayerYes || false;
-                        mob[targetIndex].seePlayer.recall = mobData.seePlayerYes || false;
+                        mob[targetIndex].seePlayer.recall = (mobData.seePlayerRecall !== undefined) ? mobData.seePlayerRecall : (mobData.seePlayerYes || false);
+                        if (isFinite(mobData.health) && isFinite(mobData.maxHealth) && mobData.health < mobData.maxHealth) {
+                            mob[targetIndex].seePlayer.recall = true;
+                        }
                         if (mobData.targetX !== null && mobData.targetY !== null) {
                             mob[targetIndex].targetPos = { x: mobData.targetX, y: mobData.targetY };
                         }
@@ -3347,18 +3414,19 @@ const multiplayer = {
                         ghost.isGhost = true;
                         ghost.alive = true;
                         ghost.health = isFinite(mobData.health) ? mobData.health : 1;
-                        ghost.maxHealth = 1; // Add maxHealth for proper health bar rendering
+                        ghost.maxHealth = isFinite(mobData.maxHealth) ? mobData.maxHealth : 1;
                         ghost.radius = radius;
-                        ghost.seePlayer = { recall: mobData.seePlayerYes || false, yes: mobData.seePlayerYes || false, position: { x: mobData.x || 0, y: mobData.y || 0 } };
-                        ghost.showHealthBar = true;
+                        ghost.seePlayer = { recall: (mobData.seePlayerRecall !== undefined) ? mobData.seePlayerRecall : (mobData.seePlayerYes || false), yes: mobData.seePlayerYes || false, position: { x: mobData.x || 0, y: mobData.y || 0 } };
+                        ghost.showHealthBar = mobData.showHealthBar !== false;
                         ghost.fill = mobData.fill || '#735084'; // Use actual fill or default purple
                         ghost.stroke = mobData.stroke || '#000000'; // Use actual stroke or black
                         ghost.cd = 0;
                         ghost.seePlayerFreq = 30;
-                        ghost.isDropPowerUp = true;
-                        ghost.isShielded = false;
-                        ghost.isBoss = false;
-                        ghost.shield = null;
+                        ghost.isDropPowerUp = mobData.isDropPowerUp !== undefined ? !!mobData.isDropPowerUp : true;
+                        ghost.isShielded = !!mobData.isShielded;
+                        ghost.isBoss = !!mobData.isBoss;
+                        ghost.shield = !!mobData.shield;
+                        ghost.isExtraShield = !!mobData.isExtraShield;
                         ghost.status = []; // Status effects array
                         
                         // Add minimal required methods for proper mob behavior
@@ -3572,8 +3640,19 @@ const multiplayer = {
         // Update powerups (they move with physics)
         if (physicsData.powerups && typeof powerUp !== 'undefined') {
             for (const powerupData of physicsData.powerups) {
-                const localIndex = this.networkPowerups.get(powerupData.id);
+                let localIndex = this.networkPowerups.get(powerupData.id);
+                if ((localIndex === undefined || !powerUp[localIndex]) && powerupData.id) {
+                    for (let i = 0; i < powerUp.length; i++) {
+                        if (powerUp[i] && powerUp[i].networkId === powerupData.id) {
+                            localIndex = i;
+                            this.localPowerupIds.set(i, powerupData.id);
+                            this.networkPowerups.set(powerupData.id, i);
+                            break;
+                        }
+                    }
+                }
                 if (localIndex !== undefined && powerUp[localIndex]) {
+                    powerUp[localIndex].networkId = powerupData.id;
                     const currentPos = powerUp[localIndex].position;
                     const lerpFactor = 0.3;
                     

@@ -92,6 +92,9 @@ const powerUps = {
                 
                 Matter.World.remove(engine.world, powerUp[i]);
                 powerUp.splice(i, 1);
+                if (typeof multiplayer !== 'undefined' && multiplayer.enabled && typeof multiplayer.notifyLocalPowerupRemoved === 'function') {
+                    multiplayer.notifyLocalPowerupRemoved(i, networkId);
+                }
                 
                 // Sync powerup removal to multiplayer
                 if (networkId && typeof multiplayer !== 'undefined' && multiplayer.enabled) {

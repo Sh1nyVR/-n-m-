@@ -2148,6 +2148,9 @@ const b = {
                                         powerUp[i].effect();
                                         Matter.World.remove(engine.world, powerUp[i]);
                                         powerUp.splice(i, 1);
+                                        if (typeof multiplayer !== 'undefined' && multiplayer.enabled && typeof multiplayer.notifyLocalPowerupRemoved === 'function') {
+                                            multiplayer.notifyLocalPowerupRemoved(i, networkId);
+                                        }
                                         
                                         // Sync powerup pickup to multiplayer
                                         if (networkId && typeof multiplayer !== 'undefined' && multiplayer.enabled) {
@@ -2190,6 +2193,9 @@ const b = {
                                             powerUp[i].effect();
                                             Matter.World.remove(engine.world, powerUp[i]);
                                             powerUp.splice(i, 1);
+                                            if (typeof multiplayer !== 'undefined' && multiplayer.enabled && typeof multiplayer.notifyLocalPowerupRemoved === 'function') {
+                                                multiplayer.notifyLocalPowerupRemoved(i, networkId2);
+                                            }
                                             
                                             // Sync powerup pickup to multiplayer
                                             if (networkId2 && typeof multiplayer !== 'undefined' && multiplayer.enabled) {

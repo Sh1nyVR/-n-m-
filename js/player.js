@@ -1353,6 +1353,9 @@ const m = {
                     
                     // Remove from array
                     powerUp.splice(powerupIndex, 1);
+                    if (typeof multiplayer !== 'undefined' && multiplayer.enabled && typeof multiplayer.notifyLocalPowerupRemoved === 'function') {
+                        multiplayer.notifyLocalPowerupRemoved(powerupIndex, networkId);
+                    }
                     
                     // Sync powerup pickup AFTER local removal using network ID
                     if (networkId && typeof multiplayer !== 'undefined' && multiplayer.enabled) {
@@ -2448,6 +2451,9 @@ const m = {
                                         powerUp[i].effect();
                                         Matter.World.remove(engine.world, powerUp[i]);
                                         powerUp.splice(i, 1);
+                                        if (typeof multiplayer !== 'undefined' && multiplayer.enabled && typeof multiplayer.notifyLocalPowerupRemoved === 'function') {
+                                            multiplayer.notifyLocalPowerupRemoved(i, networkId);
+                                        }
                                         
                                         // Sync powerup pickup to multiplayer
                                         if (networkId && typeof multiplayer !== 'undefined' && multiplayer.enabled) {
@@ -2632,6 +2638,9 @@ const m = {
                                     
                                     Matter.World.remove(engine.world, powerUp[i]);
                                     powerUp.splice(i, 1);
+                                    if (typeof multiplayer !== 'undefined' && multiplayer.enabled && typeof multiplayer.notifyLocalPowerupRemoved === 'function') {
+                                        multiplayer.notifyLocalPowerupRemoved(i, networkId);
+                                    }
                                     
                                     // Sync powerup pickup AFTER local removal using network ID
                                     if (networkId && typeof multiplayer !== 'undefined' && multiplayer.enabled) {
