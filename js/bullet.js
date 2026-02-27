@@ -305,7 +305,46 @@ const b = {
     explosionRange() {
         return tech.explosiveRadius * (tech.isExplosionHarm ? 1.8 : 1) * (tech.isSmallExplosion ? 0.66 : 1) * (tech.isExplodeRadio ? 1.25 : 1)
     },
+    // Resolve authoritative owner state for networked bots.
+    getBotOwnerState(ownerId = null) {
+        const localPos = (typeof m !== 'undefined' && m.pos) ? m.pos : ((typeof player !== 'undefined' && player.position) ? player.position : { x: 0, y: 0 });
+        const localVel = (typeof player !== 'undefined' && player.velocity) ? player.velocity : { x: 0, y: 0 };
+        const state = {
+            isLocalOwner: true,
+            pos: localPos,
+            velocity: localVel,
+            isCloak: (typeof m !== 'undefined') ? !!m.isCloak : false,
+            energy: (typeof m !== 'undefined' && isFinite(m.energy)) ? m.energy : 0
+        };
+
+        if (!(typeof multiplayer !== 'undefined' && multiplayer.enabled) || !ownerId || ownerId === multiplayer.playerId) {
+            return state;
+        }
+
+        const p = multiplayer.players && multiplayer.players[ownerId];
+        if (!p) {
+            return { ...state, isLocalOwner: false };
+        }
+
+        return {
+            isLocalOwner: false,
+            pos: (isFinite(p.x) && isFinite(p.y)) ? { x: p.x, y: p.y } : localPos,
+            velocity: (isFinite(p.vx) && isFinite(p.vy)) ? { x: p.vx, y: p.vy } : { x: 0, y: 0 },
+            isCloak: !!p.isCloak,
+            energy: isFinite(p.energy) ? p.energy : Infinity
+        };
+    },
+    // In multiplayer, host is authoritative for bot combat logic to avoid duplicate firing/damage.
+    shouldBotRunCombat(ownerId = null) {
+        if (!(typeof multiplayer !== 'undefined' && multiplayer.enabled)) return true;
+        return !!multiplayer.isHost;
+    },
     explosion(where, radius, color = "rgba(255,25,0,0.6)", skipSync = false, ownerId = null) { // typically explode is used for some bullets with .onEnd
+        if ((ownerId === null || ownerId === undefined) && typeof multiplayer !== 'undefined' && multiplayer.enabled) {
+            ownerId = (multiplayer.isSpawningRemote && multiplayer.spawningRemoteOwnerId)
+                ? multiplayer.spawningRemoteOwnerId
+                : multiplayer.playerId;
+        }
         // Sync explosion to multiplayer (but not if this explosion came from multiplayer)
         if (!skipSync && typeof multiplayer !== 'undefined' && multiplayer.enabled) {
             multiplayer.syncExplosion(where, radius, ownerId);
@@ -2643,6 +2682,7 @@ const b = {
             followDelay: 0,
             phase: Math.floor(60 * Math.random()),
             do() {
+                const owner = b.getBotOwnerState(this.ownerId);
                 // if (Vector.magnitude(Vector.sub(this.position, player.position)) < 150) {
                 //     ctx.fillStyle = "rgba(0,0,0,0.06)";
                 //     ctx.beginPath();
@@ -2653,7 +2693,7 @@ const b = {
                 //check for damage
                 if (!m.isBodiesAsleep) {
                     if (!((m.cycle + this.phase) % 30)) { //twice a second
-                        if (Vector.magnitude(Vector.sub(this.position, player.position)) < 250 && m.immuneCycle < m.cycle &&
+                        if (Vector.magnitude(Vector.sub(this.position, owner.pos)) < 250 && m.immuneCycle < m.cycle &&
                             (!(typeof multiplayer !== 'undefined' && multiplayer.enabled) || !this.ownerId || this.ownerId === multiplayer.playerId)) { //give energy
                             Matter.Body.setAngularVelocity(this, this.spin)
                             if (this.isUpgraded) {
@@ -2678,7 +2718,7 @@ const b = {
                         }
                     }
 
-                    if (!m.isCloak) { //if time dilation isn't active
+                    if (!owner.isCloak && b.shouldBotRunCombat(this.ownerId)) { //if time dilation isn't active
                         const size = 33
                         q = Matter.Query.region(mob, {
                             min: {
@@ -2708,8 +2748,12 @@ const b = {
                             }
                         }
                     }
-                    let history = m.history[(m.cycle - this.followDelay) % 600]
-                    Matter.Body.setPosition(this, { x: history.position.x, y: history.position.y - history.yOff + 24.2859 }) //bullets move with player
+                    if (owner.isLocalOwner) {
+                        let history = m.history[(m.cycle - this.followDelay) % 600]
+                        Matter.Body.setPosition(this, { x: history.position.x, y: history.position.y - history.yOff + 24.2859 }) //bullets move with player
+                    } else {
+                        Matter.Body.setPosition(this, { x: owner.pos.x, y: owner.pos.y + 24.2859 });
+                    }
                 }
             }
         })
@@ -2750,12 +2794,13 @@ const b = {
             beforeDmg() {},
             onEnd() {},
             do() {
-                const distanceToPlayer = Vector.magnitude(Vector.sub(this.position, m.pos))
+                const owner = b.getBotOwnerState(this.ownerId);
+                const distanceToPlayer = Vector.magnitude(Vector.sub(this.position, owner.pos))
                 if (distanceToPlayer > this.range) { //if far away move towards player
-                    this.force = Vector.mult(Vector.normalise(Vector.sub(m.pos, this.position)), this.mass * this.acceleration)
+                    this.force = Vector.mult(Vector.normalise(Vector.sub(owner.pos, this.position)), this.mass * this.acceleration)
                 } else { //close to player
-                    Matter.Body.setVelocity(this, Vector.add(Vector.mult(this.velocity, 0.90), Vector.mult(player.velocity, 0.17))); //add player's velocity
-                    if (this.lastLookCycle < simulation.cycle && !m.isCloak) {
+                    Matter.Body.setVelocity(this, Vector.add(Vector.mult(this.velocity, 0.90), Vector.mult(owner.velocity, 0.17))); //add owner's velocity
+                    if (this.lastLookCycle < simulation.cycle && !owner.isCloak && b.shouldBotRunCombat(this.ownerId)) {
                         this.lastLookCycle = simulation.cycle + (this.isUpgraded ? 21 : 110)
                         for (let i = 0, len = mob.length; i < len; i++) {
                             const dist = Vector.magnitudeSquared(Vector.sub(this.position, mob[i].position));
@@ -2807,13 +2852,14 @@ const b = {
             beforeDmg() {},
             onEnd() {},
             do() {
-                const distanceToPlayer = Vector.magnitude(Vector.sub(this.position, m.pos))
+                const owner = b.getBotOwnerState(this.ownerId);
+                const distanceToPlayer = Vector.magnitude(Vector.sub(this.position, owner.pos))
                 if (distanceToPlayer > this.range) { //if far away move towards player
-                    this.force = Vector.mult(Vector.normalise(Vector.sub(m.pos, this.position)), this.mass * 0.006)
+                    this.force = Vector.mult(Vector.normalise(Vector.sub(owner.pos, this.position)), this.mass * 0.006)
                 } else { //close to player
-                    Matter.Body.setVelocity(this, Vector.add(Vector.mult(this.velocity, 0.90), Vector.mult(player.velocity, 0.17))); //add player's velocity
+                    Matter.Body.setVelocity(this, Vector.add(Vector.mult(this.velocity, 0.90), Vector.mult(owner.velocity, 0.17))); //add owner's velocity
 
-                    if (this.cd < simulation.cycle && !(simulation.cycle % this.lookFrequency) && !m.isCloak) {
+                    if (this.cd < simulation.cycle && !(simulation.cycle % this.lookFrequency) && !owner.isCloak && b.shouldBotRunCombat(this.ownerId)) {
                         for (let i = 0, len = mob.length; i < len; i++) {
                             const dist2 = Vector.magnitudeSquared(Vector.sub(this.position, mob[i].position));
                             if (Matter.Query.ray(map, this.position, mob[i].position).length === 0 && dist2 > 250000) {
@@ -2868,13 +2914,14 @@ const b = {
             beforeDmg() {},
             onEnd() {},
             do() {
-                const distanceToPlayer = Vector.magnitude(Vector.sub(this.position, m.pos))
+                const owner = b.getBotOwnerState(this.ownerId);
+                const distanceToPlayer = Vector.magnitude(Vector.sub(this.position, owner.pos))
                 if (distanceToPlayer > this.range) { //if far away move towards player
-                    this.force = Vector.mult(Vector.normalise(Vector.sub(m.pos, this.position)), this.mass * this.acceleration)
+                    this.force = Vector.mult(Vector.normalise(Vector.sub(owner.pos, this.position)), this.mass * this.acceleration)
                 } else { //close to player
-                    Matter.Body.setVelocity(this, Vector.add(Vector.mult(this.velocity, 0.90), Vector.mult(player.velocity, 0.17))); //add player's velocity
+                    Matter.Body.setVelocity(this, Vector.add(Vector.mult(this.velocity, 0.90), Vector.mult(owner.velocity, 0.17))); //add owner's velocity
 
-                    if (this.cd < simulation.cycle && !(simulation.cycle % this.lookFrequency) && !m.isCloak) {
+                    if (this.cd < simulation.cycle && !(simulation.cycle % this.lookFrequency) && !owner.isCloak && b.shouldBotRunCombat(this.ownerId)) {
                         let target
                         for (let i = 0, len = mob.length; i < len; i++) {
                             const dist2 = Vector.magnitudeSquared(Vector.sub(this.position, mob[i].position));
@@ -2938,7 +2985,8 @@ const b = {
             },
             onEnd() {},
             do() {
-                const playerPos = Vector.add(Vector.add(this.offPlayer, m.pos), Vector.mult(player.velocity, 20)) //also include an offset unique to this bot to keep many bots spread out
+                const owner = b.getBotOwnerState(this.ownerId);
+                const playerPos = Vector.add(Vector.add(this.offPlayer, owner.pos), Vector.mult(owner.velocity, 20)) //also include an offset unique to this bot to keep many bots spread out
                 const farAway = Math.max(0, (Vector.magnitude(Vector.sub(this.position, playerPos))) / this.playerRange) //linear bounding well 
                 const mag = Math.min(farAway, 4) * this.mass * this.acceleration
                 this.force = Vector.mult(Vector.normalise(Vector.sub(playerPos, this.position)), mag)
@@ -2950,7 +2998,7 @@ const b = {
                 //find targets
                 if (!(simulation.cycle % this.lookFrequency)) {
                     this.lockedOn = null;
-                    if (!m.isCloak) {
+                    if (!owner.isCloak) {
                         let closeDist = this.range;
                         for (let i = 0, len = mob.length; i < len; ++i) {
                             const DIST = Vector.magnitude(Vector.sub(this.vertices[0], mob[i].position));
@@ -2973,9 +3021,11 @@ const b = {
                     }
                 }
                 //hit target with laser
-                if (this.lockedOn && this.lockedOn.alive && m.energy > this.drainThreshold &&
-                    (!(typeof multiplayer !== 'undefined' && multiplayer.enabled) || !this.ownerId || this.ownerId === multiplayer.playerId)) {
-                    m.energy -= tech.laserFieldDrain * tech.isLaserDiode * this.drain
+                const hasEnergy = owner.isLocalOwner ? (m.energy > this.drainThreshold) : (owner.energy > this.drainThreshold);
+                if (this.lockedOn && this.lockedOn.alive && hasEnergy && b.shouldBotRunCombat(this.ownerId)) {
+                    if (owner.isLocalOwner) {
+                        m.energy -= tech.laserFieldDrain * tech.isLaserDiode * this.drain;
+                    }
                     b.laser(this.vertices[0], this.lockedOn.position, b.dmgScale * this.laserDamage * tech.laserDamage, tech.laserReflections, false, 0.4) //tech.laserDamage = 0.16
                     // laser(where = {
                     //     x: m.pos.x + 20 * Math.cos(m.angle),
@@ -3024,7 +3074,8 @@ const b = {
             explode: 0,
             beforeDmg() {
                 if (this.lockedOn) {
-                    const explosionRadius = Math.min(170 + 220 * this.isUpgraded, Vector.magnitude(Vector.sub(this.position, m.pos)) - 30)
+                    const owner = b.getBotOwnerState(this.ownerId);
+                    const explosionRadius = Math.min(170 + 220 * this.isUpgraded, Vector.magnitude(Vector.sub(this.position, owner.pos)) - 30)
                     if (explosionRadius > 60) {
                         this.explode = explosionRadius
                         // 
@@ -3038,21 +3089,23 @@ const b = {
             },
             onEnd() {},
             do() {
-                const distanceToPlayer = Vector.magnitude(Vector.sub(this.position, player.position))
+                const owner = b.getBotOwnerState(this.ownerId);
+                const distanceToPlayer = Vector.magnitude(Vector.sub(this.position, owner.pos))
                 if (distanceToPlayer > 100) { //if far away move towards player
-                    if (this.explode) {
-                        if (tech.isImmuneExplosion && m.energy > 1.43) {
+                    if (this.explode && b.shouldBotRunCombat(this.ownerId)) {
+                        const canImmuneExplosion = owner.isLocalOwner && tech.isImmuneExplosion && m.energy > 1.43;
+                        if (canImmuneExplosion) {
                             b.explosion(this.position, this.explode, "rgba(255,25,0,0.6)", false, this.ownerId || null);
                         } else {
                             b.explosion(this.position, Math.max(0, Math.min(this.explode, (distanceToPlayer - 70) / b.explosionRange())), "rgba(255,25,0,0.6)", false, this.ownerId || null);
                         }
                         this.explode = 0;
                     }
-                    this.force = Vector.mult(Vector.normalise(Vector.sub(player.position, this.position)), this.mass * this.acceleration)
+                    this.force = Vector.mult(Vector.normalise(Vector.sub(owner.pos, this.position)), this.mass * this.acceleration)
                 } else if (distanceToPlayer < 250) { //close to player
-                    Matter.Body.setVelocity(this, Vector.add(Vector.mult(this.velocity, 0.90), Vector.mult(player.velocity, 0.17))); //add player's velocity
+                    Matter.Body.setVelocity(this, Vector.add(Vector.mult(this.velocity, 0.90), Vector.mult(owner.velocity, 0.17))); //add owner's velocity
                     //find targets
-                    if (!(simulation.cycle % this.lookFrequency) && !m.isCloak) {
+                    if (!(simulation.cycle % this.lookFrequency) && !owner.isCloak) {
                         this.lockedOn = null;
                         let closeDist = this.range;
                         for (let i = 0, len = mob.length; i < len; ++i) {
@@ -3068,7 +3121,7 @@ const b = {
                     }
                 }
                 //punch target
-                if (this.lockedOn && this.lockedOn.alive && !m.isCloak) {
+                if (this.lockedOn && this.lockedOn.alive && !owner.isCloak) {
                     const DIST = Vector.magnitude(Vector.sub(this.vertices[0], this.lockedOn.position));
                     if (DIST - this.lockedOn.radius < this.range &&
                         Matter.Query.ray(map, this.position, this.lockedOn.position).length === 0) {
@@ -3116,15 +3169,16 @@ const b = {
             },
             onEnd() {},
             do() {
-                const distanceToPlayer = Vector.magnitude(Vector.sub(this.position, m.pos))
+                const owner = b.getBotOwnerState(this.ownerId);
+                const distanceToPlayer = Vector.magnitude(Vector.sub(this.position, owner.pos))
                 if (distanceToPlayer > 150) { //if far away move towards player
-                    this.force = Vector.mult(Vector.normalise(Vector.sub(m.pos, this.position)), this.mass * this.acceleration)
+                    this.force = Vector.mult(Vector.normalise(Vector.sub(owner.pos, this.position)), this.mass * this.acceleration)
                 }
-                Matter.Body.setVelocity(this, Vector.add(Vector.mult(this.velocity, 0.90), Vector.mult(player.velocity, 0.17))); //add player's velocity
+                Matter.Body.setVelocity(this, Vector.add(Vector.mult(this.velocity, 0.90), Vector.mult(owner.velocity, 0.17))); //add owner's velocity
                 //find closest
                 if (!(simulation.cycle % this.lookFrequency)) {
                     this.lockedOn = null;
-                    if (!m.isCloak) {
+                    if (!owner.isCloak) {
                         let closeDist = tech.isPlasmaRange * 1000;
                         for (let i = 0, len = mob.length; i < len; ++i) {
                             const DIST = Vector.magnitude(Vector.sub(this.position, mob[i].position)) - mob[i].radius;
@@ -3139,13 +3193,15 @@ const b = {
                     }
                 }
                 //fire plasma at target
-                if (this.lockedOn && this.lockedOn.alive && m.fieldCDcycle < m.cycle) {
+                if (this.lockedOn && this.lockedOn.alive && (owner.isLocalOwner ? (m.fieldCDcycle < m.cycle) : true)) {
                     const sub = Vector.sub(this.lockedOn.position, this.position)
                     const DIST = Vector.magnitude(sub);
                     const unit = Vector.normalise(sub)
-                    if (DIST < tech.isPlasmaRange * 450 && m.energy > this.drainThreshold &&
-                        (!(typeof multiplayer !== 'undefined' && multiplayer.enabled) || !this.ownerId || this.ownerId === multiplayer.playerId)) {
-                        m.energy -= 0.005;
+                    const hasEnergy = owner.isLocalOwner ? (m.energy > this.drainThreshold) : (owner.energy > this.drainThreshold);
+                    if (DIST < tech.isPlasmaRange * 450 && hasEnergy && b.shouldBotRunCombat(this.ownerId)) {
+                        if (owner.isLocalOwner) {
+                            m.energy -= 0.005;
+                        }
                         // if (m.energy < 0) {
                         //     m.fieldCDcycle = m.cycle + 120;
                         //     m.energy = 0;
@@ -3224,7 +3280,7 @@ const b = {
                                 best.who.damage(dmg);
                                 best.who.locatePlayer();
                                 //push mobs away
-                                const force = Vector.mult(Vector.normalise(Vector.sub(m.pos, path[1])), -0.01 * Math.min(5, best.who.mass))
+                                const force = Vector.mult(Vector.normalise(Vector.sub(owner.pos, path[1])), -0.01 * Math.min(5, best.who.mass))
                                 Matter.Body.applyForce(best.who, path[1], force)
                                 Matter.Body.setVelocity(best.who, { //friction
                                     x: best.who.velocity.x * 0.7,
@@ -3240,7 +3296,7 @@ const b = {
                                 });
                             } else if (!best.who.isStatic) {
                                 //push blocks away
-                                const force = Vector.mult(Vector.normalise(Vector.sub(m.pos, path[1])), -0.007 * Math.sqrt(Math.sqrt(best.who.mass)))
+                                const force = Vector.mult(Vector.normalise(Vector.sub(owner.pos, path[1])), -0.007 * Math.sqrt(Math.sqrt(best.who.mass)))
                                 Matter.Body.applyForce(best.who, path[1], force)
                             }
                         }
@@ -3318,9 +3374,10 @@ const b = {
             orbitalSpeed: 0,
             phase: 2 * Math.PI * Math.random(),
             do() {
+                const owner = b.getBotOwnerState(this.ownerId);
 
                 //check for damage
-                if (!m.isCloak && !m.isBodiesAsleep) { //if time dilation isn't active
+                if (!owner.isCloak && !m.isBodiesAsleep && b.shouldBotRunCombat(this.ownerId)) { //if time dilation isn't active
                     // q = Matter.Query.point(mob, this.position)
                     // q = Matter.Query.collides(this, mob)
                     const size = 33
@@ -3356,11 +3413,7 @@ const b = {
                     x: Math.cos(time),
                     y: Math.sin(time)
                 }
-                let anchor = m.pos;
-                if (typeof multiplayer !== 'undefined' && multiplayer.enabled && this.ownerId && multiplayer.playerId !== this.ownerId) {
-                    const p = multiplayer.players && multiplayer.players[this.ownerId];
-                    if (p && isFinite(p.x) && isFinite(p.y)) anchor = { x: p.x, y: p.y };
-                }
+                let anchor = owner.pos;
                 Matter.Body.setPosition(this, Vector.add(anchor, Vector.mult(orbit, this.range)))
             }
         })

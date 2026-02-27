@@ -185,6 +185,27 @@ const multiplayer = {
         console.log('Multiplayer initialized. Player ID:', this.playerId);
         return true;
     },
+
+    // Best-effort cleanup for stale/empty lobbies to keep join/list fast.
+    async cleanupStaleLobbies(maxAgeMs = 1000 * 60 * 60 * 12) {
+        if (!database) return;
+        const now = Date.now();
+        const staleCutoff = now - maxAgeMs;
+        const snap = await database.ref('lobbies').orderByChild('createdAt').limitToLast(300).once('value').catch(() => null);
+        if (!snap || !snap.exists()) return;
+        const removals = [];
+        snap.forEach((childSnapshot) => {
+            const lobby = childSnapshot.val() || {};
+            const playerCount = Object.keys(lobby.players || {}).length;
+            const createdAt = Number(lobby.createdAt) || 0;
+            const isStale = !createdAt || createdAt < staleCutoff;
+            const isEmpty = playerCount === 0;
+            if (isStale || isEmpty) {
+                removals.push(database.ref(`lobbies/${childSnapshot.key}`).remove().catch(() => {}));
+            }
+        });
+        if (removals.length) await Promise.all(removals);
+    },
     
     // Create a new lobby
     async createLobby(isPrivate, password, gameMode, lobbyName) {
@@ -197,6 +218,7 @@ const multiplayer = {
         if (!authOk) {
             throw new Error('Firebase Auth anonymous sign-in failed. Enable Firebase Authentication and the Anonymous provider, or relax Realtime Database rules for testing.');
         }
+        this.cleanupStaleLobbies().catch(() => {});
         if (this.lobbyId) {
             try {
                 await database.ref(`lobbies/${this.lobbyId}/players/${this.playerId}`).remove();
@@ -219,7 +241,7 @@ const multiplayer = {
             createdAt: Date.now(),
             gameStarted: false,
             hostOnlyLevelExit: false,
-            persistEmptyLobby: true,
+            persistEmptyLobby: false,
             players: {}
         };
         
@@ -240,6 +262,10 @@ const multiplayer = {
         // Setup disconnect handler
         const playerRef = database.ref(`lobbies/${this.lobbyId}/players/${this.playerId}`);
         playerRef.onDisconnect().remove();
+        // Host disconnect should remove the entire lobby to prevent stale rooms.
+        database.ref(`lobbies/${this.lobbyId}`).onDisconnect().remove();
+        // Remove stale physics path for this player on disconnect.
+        database.ref(`lobbies/${this.lobbyId}/physics/${this.playerId}`).onDisconnect().remove();
         
         // Listen for other players joining
         this.listenToPlayers();
@@ -277,6 +303,7 @@ const multiplayer = {
         if (!authOk) {
             throw new Error('Firebase Auth anonymous sign-in failed. Enable Firebase Authentication and the Anonymous provider, or relax Realtime Database rules for testing.');
         }
+        this.cleanupStaleLobbies().catch(() => {});
         if (this.lobbyId && this.lobbyId !== lobbyId) {
             try {
                 await database.ref(`lobbies/${this.lobbyId}/players/${this.playerId}`).remove();
@@ -318,6 +345,8 @@ const multiplayer = {
         
         // Setup disconnect handler
         playerRef.onDisconnect().remove();
+        // Remove stale physics path for this player on disconnect.
+        database.ref(`lobbies/${this.lobbyId}/physics/${this.playerId}`).onDisconnect().remove();
         
         // Initialize local start state based on lobby
         this.gameStarted = !!lobbyData.gameStarted;
@@ -397,6 +426,7 @@ const multiplayer = {
         
         const playerRef = database.ref(`lobbies/${lobbyId}/players/${this.playerId}`);
         await playerRef.remove();
+        await database.ref(`lobbies/${lobbyId}/physics/${this.playerId}`).remove().catch(() => {});
         
         // Host leaving: remove lobby entirely to prevent orphaned stale rooms.
         if (wasHost) {
@@ -435,6 +465,19 @@ const multiplayer = {
                 if (id !== this.playerId) {
                     this.players[id] = data;
                 }
+            }
+
+            // Host cleanup: remove stale physics entries from players who are no longer in lobby.
+            if (this.isHost && this.lobbyId) {
+                const activeIds = new Set(Object.keys(players || {}));
+                database.ref(`lobbies/${this.lobbyId}/physics`).once('value').then((physicsSnap) => {
+                    if (!physicsSnap.exists()) return;
+                    physicsSnap.forEach((child) => {
+                        if (!activeIds.has(child.key)) {
+                            database.ref(`lobbies/${this.lobbyId}/physics/${child.key}`).remove().catch(() => {});
+                        }
+                    });
+                }).catch(() => {});
             }
 
             console.log('Updated player list:', Object.keys(this.players).length, 'other players');
@@ -3176,7 +3219,8 @@ const multiplayer = {
                                 vx: this.sanitizeValue(body[i].velocity.x),
                                 vy: this.sanitizeValue(body[i].velocity.y),
                                 angle: this.sanitizeValue(body[i].angle),
-                                angularVelocity: this.sanitizeValue(body[i].angularVelocity)
+                                angularVelocity: this.sanitizeValue(body[i].angularVelocity),
+                                vertices: body[i].vertices ? body[i].vertices.map(v => ({ x: v.x, y: v.y })) : null
                             });
                             count++;
                         }
@@ -3195,7 +3239,8 @@ const multiplayer = {
                                 vx: this.sanitizeValue(body[i].velocity.x),
                                 vy: this.sanitizeValue(body[i].velocity.y),
                                 angle: this.sanitizeValue(body[i].angle),
-                                angularVelocity: this.sanitizeValue(body[i].angularVelocity)
+                                angularVelocity: this.sanitizeValue(body[i].angularVelocity),
+                                vertices: body[i].vertices ? body[i].vertices.map(v => ({ x: v.x, y: v.y })) : null
                             });
                             count++;
                         }
@@ -3218,7 +3263,8 @@ const multiplayer = {
                         vx: this.sanitizeValue(m.holdingTarget.velocity.x),
                         vy: this.sanitizeValue(m.holdingTarget.velocity.y),
                         angle: this.sanitizeValue(m.holdingTarget.angle),
-                        angularVelocity: this.sanitizeValue(m.holdingTarget.angularVelocity)
+                        angularVelocity: this.sanitizeValue(m.holdingTarget.angularVelocity),
+                        vertices: m.holdingTarget.vertices ? m.holdingTarget.vertices.map(v => ({ x: v.x, y: v.y })) : null
                     });
                 }
             }
@@ -3295,6 +3341,8 @@ const multiplayer = {
             // Apply physics updates from all other players
             for (const [playerId, physicsData] of Object.entries(allPhysicsData)) {
                 if (playerId === this.playerId) continue; // Skip own physics
+                const isKnownPlayer = (playerId === this.hostId) || !!(this.players && this.players[playerId]);
+                if (!isKnownPlayer) continue; // Ignore stale physics nodes from disconnected players
                 this.applyPhysicsUpdate(physicsData, playerId);
             }
         };
@@ -3650,7 +3698,17 @@ const multiplayer = {
                 if (resolvedIndex >= 0 && resolvedIndex < body.length && body[resolvedIndex]) {
                     targetBody = body[resolvedIndex];
                 }
-                let minDist2 = 40000; // 200 unit threshold squared (blocks can move far when picked up)
+                // Then try direct Matter body id match (more stable when array indices drift).
+                if (!targetBody && isFinite(blockData.bodyId)) {
+                    for (let i = 0; i < body.length; i++) {
+                        if (body[i] && body[i].id === blockData.bodyId) {
+                            targetBody = body[i];
+                            resolvedIndex = i;
+                            break;
+                        }
+                    }
+                }
+                let minDist2 = 22500; // 150 unit threshold squared
 
                 if (!targetBody) {
                     for (let i = 0; i < body.length; i++) {
@@ -3720,6 +3778,29 @@ const multiplayer = {
                     const newAngle = currentAngle + angleDiff * lerpFactor;
                     Matter.Body.setAngle(targetBody, newAngle);
                     Matter.Body.setAngularVelocity(targetBody, blockData.angularVelocity || 0);
+
+                    // Apply authoritative shape data when provided (fixes incorrect block sizes/shapes).
+                    if (Array.isArray(blockData.vertices) && blockData.vertices.length >= 3) {
+                        try {
+                            let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+                            for (let i = 0; i < blockData.vertices.length; i++) {
+                                const v = blockData.vertices[i];
+                                if (v.x < minX) minX = v.x;
+                                if (v.y < minY) minY = v.y;
+                                if (v.x > maxX) maxX = v.x;
+                                if (v.y > maxY) maxY = v.y;
+                            }
+                            const remoteW = Math.max(0, maxX - minX);
+                            const remoteH = Math.max(0, maxY - minY);
+                            const localW = targetBody.bounds ? Math.max(0, targetBody.bounds.max.x - targetBody.bounds.min.x) : remoteW;
+                            const localH = targetBody.bounds ? Math.max(0, targetBody.bounds.max.y - targetBody.bounds.min.y) : remoteH;
+                            const shapeMismatch = (targetBody.vertices?.length || 0) !== blockData.vertices.length ||
+                                Math.abs(localW - remoteW) > 1 || Math.abs(localH - remoteH) > 1;
+                            if (shapeMismatch) {
+                                Matter.Body.setVertices(targetBody, blockData.vertices);
+                            }
+                        } catch (e) { /* ignore malformed verts */ }
+                    }
                 }
             }
         }
