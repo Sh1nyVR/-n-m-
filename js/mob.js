@@ -1107,6 +1107,11 @@ const mobs = {
             damage(dmg, isBypassShield = false) {
                 // Host-authoritative damage in multiplayer to prevent client-side desyncs.
                 if (typeof multiplayer !== 'undefined' && multiplayer.enabled && !multiplayer.isHost) return;
+                if (typeof multiplayer !== 'undefined' && multiplayer.enabled && multiplayer.isHost && !this.netId) {
+                    this.netId = `${multiplayer.playerId}_m${multiplayer.mobNetIdCounter++}`;
+                    const idx = mob.indexOf(this);
+                    if (idx !== -1) multiplayer.mobIndexByNetId.set(this.netId, idx);
+                }
                 if ((!this.isShielded || isBypassShield) && this.alive) {
                     dmg *= tech.damageFromTech()
                     //mobs specific damage changes
@@ -1152,8 +1157,13 @@ const mobs = {
                 this.alive = false; //triggers mob removal in mob[i].replace(i)
                 
                 // MULTIPLAYER FIX: Sync death event to all players using netId
-                if (typeof multiplayer !== 'undefined' && multiplayer.enabled && this.netId) {
-                    multiplayer.syncMobDeath(this.netId, {
+                if (typeof multiplayer !== 'undefined' && multiplayer.enabled && multiplayer.isHost) {
+                    if (!this.netId) {
+                        this.netId = `${multiplayer.playerId}_m${multiplayer.mobNetIdCounter++}`;
+                        const idx = mob.indexOf(this);
+                        if (idx !== -1) multiplayer.mobIndexByNetId.set(this.netId, idx);
+                    }
+                    multiplayer.syncMobDeath(this.netId || null, {
                         position: { x: this.position.x, y: this.position.y },
                         radius: this.radius || 30,
                         fill: this.fill || '#735084'

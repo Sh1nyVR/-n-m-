@@ -1266,7 +1266,7 @@ const multiplayer = {
     },
     
     // Sync explosion effect
-    syncExplosion(position, radius) {
+    syncExplosion(position, radius, ownerId = null) {
         if (!this.enabled || !this.lobbyId) return;
         
         console.log('📤 Syncing explosion at:', position, 'radius:', radius);
@@ -1275,6 +1275,7 @@ const multiplayer = {
         eventRef.set({
             type: 'explosion',
             playerId: this.playerId,
+            ownerId: ownerId || null,
             position: { x: position.x, y: position.y },
             radius: radius,
             timestamp: Date.now()
@@ -1707,13 +1708,12 @@ const multiplayer = {
     // Sync mob death (separate from damage for reliability)
     syncMobDeath(mobNetId, mobData = {}) {
         if (!this.enabled || !this.lobbyId || !this.isHost) return;
-        if (!mobNetId) return; // Must have netId
         
         // Find the mob to get its position for death VFX
         let deathPosition = null;
         let mobRadius = 30;
         let mobFill = '#735084';
-        if (typeof mob !== 'undefined') {
+        if (typeof mob !== 'undefined' && mobNetId) {
             const targetMob = mob.find(m => m && m.netId === mobNetId);
             if (targetMob) {
                 deathPosition = { x: targetMob.position.x, y: targetMob.position.y };
@@ -1728,7 +1728,7 @@ const multiplayer = {
         eventRef.set({
             type: 'mob_death',
             playerId: this.playerId,
-            mobNetId: mobNetId,
+            mobNetId: mobNetId || null,
             position: deathPosition,
             radius: mobRadius,
             fill: mobFill,
@@ -2090,7 +2090,7 @@ const multiplayer = {
         
         if (typeof b !== 'undefined' && b.explosion) {
             // Call the actual explosion function with skipSync=true to prevent infinite loop
-            b.explosion(event.position, event.radius, "rgba(255,25,0,0.6)", true);
+            b.explosion(event.position, event.radius, "rgba(255,25,0,0.6)", true, event.ownerId || null);
             console.log('✅ Triggered explosion effect');
         } else {
             console.log('❌ Could not trigger explosion - b.explosion not available');
@@ -2311,33 +2311,50 @@ const multiplayer = {
     
     // Handle remote mob death (separate from damage for reliability)
     handleRemoteMobDeath(event) {
-        if (typeof mob !== 'undefined' && event.mobNetId) {
-            console.log(`💀 Received mob death event for ${event.mobNetId}`);
-            
-            // Find mob by netId
+        if (typeof mob !== 'undefined') {
+            console.log(`Received mob death event for ${event.mobNetId || 'unknown_netId'}`);
+
+            // Find mob by netId first
             let targetMob = null;
             let targetIndex = -1;
-            for (let i = 0; i < mob.length; i++) {
-                if (mob[i] && mob[i].netId === event.mobNetId) {
-                    targetMob = mob[i];
-                    targetIndex = i;
-                    break;
+            if (event.mobNetId) {
+                for (let i = 0; i < mob.length; i++) {
+                    if (mob[i] && mob[i].netId === event.mobNetId) {
+                        targetMob = mob[i];
+                        targetIndex = i;
+                        break;
+                    }
                 }
             }
-            
+
+            // Fallback for stale/missing netIds: resolve by nearest death position.
+            if (!targetMob && event.position && isFinite(event.position.x) && isFinite(event.position.y)) {
+                let bestDist2 = Infinity;
+                const maxRadius = Math.max(120, (event.radius || 30) * 2.5);
+                const maxDist2 = maxRadius * maxRadius;
+                for (let i = 0; i < mob.length; i++) {
+                    if (!mob[i] || mob[i].alive === false || !mob[i].position) continue;
+                    const dx = mob[i].position.x - event.position.x;
+                    const dy = mob[i].position.y - event.position.y;
+                    const dist2 = dx * dx + dy * dy;
+                    if (dist2 <= maxDist2 && dist2 < bestDist2) {
+                        bestDist2 = dist2;
+                        targetMob = mob[i];
+                        targetIndex = i;
+                    }
+                }
+            }
+
             if (targetMob) {
                 // Death VFX - explosion effect at death position
                 if (event.position && typeof simulation !== 'undefined' && simulation.drawList) {
-                    // Death explosion visual
                     simulation.drawList.push({
                         x: event.position.x,
-                        y: event.position.y, 
+                        y: event.position.y,
                         radius: (event.radius || 30) * 2,
                         color: event.fill ? event.fill.replace('rgb', 'rgba').replace(')', ',0.3)') : "rgba(115,80,132,0.3)",
                         time: 20
                     });
-                    
-                    // Add smaller secondary explosion for effect
                     simulation.drawList.push({
                         x: event.position.x,
                         y: event.position.y,
@@ -2346,9 +2363,8 @@ const multiplayer = {
                         time: 15
                     });
                 }
-                
+
                 if (targetMob.alive) {
-                    // Mark as dead first to prevent duplicate death calls
                     targetMob.alive = false;
 
                     // Never execute full death logic on clients (drops/spawns are host-authoritative)
@@ -2379,18 +2395,18 @@ const multiplayer = {
                             mob.splice(targetIndex, 1);
                         }
                     }
-                    
+
                     // Clean up netId tracking
-                    if (this.mobIndexByNetId.has(event.mobNetId)) {
+                    if (event.mobNetId && this.mobIndexByNetId.has(event.mobNetId)) {
                         this.mobIndexByNetId.delete(event.mobNetId);
                     }
                 }
             } else {
-                console.log(`⚠️ Could not find mob with netId ${event.mobNetId} to kill`);
+                console.log(`Could not resolve mob for death event ${event.mobNetId || 'unknown_netId'}`);
             }
         }
     },
-    
+
     // Handle remote powerup grabbing
     handleRemotePowerupGrab(data) {
         console.log('handleRemotePowerupGrab called with:', data);
@@ -3619,8 +3635,10 @@ const multiplayer = {
             }
         }
         
-        // Update blocks (use interpolation to smooth the updates) - accept from any player
+        // Update blocks (use interpolation to smooth the updates)
+        // Host can accept client updates; clients should only accept host updates.
         if (physicsData.blocks && typeof body !== 'undefined') {
+            if (!this.isHost && !isFromHost) physicsData.blocks = [];
             if (physicsData.blocks.length > 0 && Math.random() < 0.02) {
                 console.log(`📥 Applying ${physicsData.blocks.length} block updates from player ${fromPlayerId}`);
             }

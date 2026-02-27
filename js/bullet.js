@@ -305,10 +305,10 @@ const b = {
     explosionRange() {
         return tech.explosiveRadius * (tech.isExplosionHarm ? 1.8 : 1) * (tech.isSmallExplosion ? 0.66 : 1) * (tech.isExplodeRadio ? 1.25 : 1)
     },
-    explosion(where, radius, color = "rgba(255,25,0,0.6)", skipSync = false) { // typically explode is used for some bullets with .onEnd
+    explosion(where, radius, color = "rgba(255,25,0,0.6)", skipSync = false, ownerId = null) { // typically explode is used for some bullets with .onEnd
         // Sync explosion to multiplayer (but not if this explosion came from multiplayer)
         if (!skipSync && typeof multiplayer !== 'undefined' && multiplayer.enabled) {
-            multiplayer.syncExplosion(where, radius);
+            multiplayer.syncExplosion(where, radius, ownerId);
         }
         
         radius *= tech.explosiveRadius
@@ -332,8 +332,10 @@ const b = {
                 time: simulation.drawTime * 2
             });
 
+            const allowPlayerDamage = !(typeof multiplayer !== 'undefined' && multiplayer.enabled) ||
+                multiplayer.shouldAllowDamage(ownerId, multiplayer.playerId);
             //player damage
-            if (Vector.magnitude(Vector.sub(where, player.position)) < radius) {
+            if (allowPlayerDamage && Vector.magnitude(Vector.sub(where, player.position)) < radius) {
                 const drain = (tech.isExplosionHarm ? 0.5 : 0.25) * (tech.isImmuneExplosion ? Math.min(1, Math.max(1 - m.energy * 0.7, 0)) : 1)
                 m.energy -= drain
                 if (m.energy < 0) {
@@ -376,7 +378,9 @@ const b = {
             });
 
             //player damage and knock back
-            if (m.immuneCycle < m.cycle) {
+            const allowPlayerDamage = !(typeof multiplayer !== 'undefined' && multiplayer.enabled) ||
+                multiplayer.shouldAllowDamage(ownerId, multiplayer.playerId);
+            if (allowPlayerDamage && m.immuneCycle < m.cycle) {
                 sub = Vector.sub(where, player.position);
                 dist = Vector.magnitude(sub);
 
@@ -2614,6 +2618,9 @@ const b = {
         bullet[me] = Bodies.polygon(position.x, position.y, 5, 10, {
             isUpgraded: tech.isDynamoBotUpgrade,
             botType: "dynamo",
+            ownerId: (typeof multiplayer !== 'undefined' && multiplayer.enabled)
+                ? ((multiplayer.isSpawningRemote && multiplayer.spawningRemoteOwnerId) ? multiplayer.spawningRemoteOwnerId : multiplayer.playerId)
+                : null,
             friction: 0,
             frictionStatic: 0,
             frictionAir: 0.02,
@@ -2646,7 +2653,8 @@ const b = {
                 //check for damage
                 if (!m.isBodiesAsleep) {
                     if (!((m.cycle + this.phase) % 30)) { //twice a second
-                        if (Vector.magnitude(Vector.sub(this.position, player.position)) < 250 && m.immuneCycle < m.cycle) { //give energy
+                        if (Vector.magnitude(Vector.sub(this.position, player.position)) < 250 && m.immuneCycle < m.cycle &&
+                            (!(typeof multiplayer !== 'undefined' && multiplayer.enabled) || !this.ownerId || this.ownerId === multiplayer.playerId)) { //give energy
                             Matter.Body.setAngularVelocity(this, this.spin)
                             if (this.isUpgraded) {
                                 m.energy += 0.1
@@ -2719,6 +2727,9 @@ const b = {
         bullet[me] = Bodies.polygon(position.x, position.y, 4, RADIUS, {
             isUpgraded: tech.isNailBotUpgrade,
             botType: "nail",
+            ownerId: (typeof multiplayer !== 'undefined' && multiplayer.enabled)
+                ? ((multiplayer.isSpawningRemote && multiplayer.spawningRemoteOwnerId) ? multiplayer.spawningRemoteOwnerId : multiplayer.playerId)
+                : null,
             angle: dir,
             friction: 0,
             frictionStatic: 0,
@@ -2773,6 +2784,9 @@ const b = {
         const me = bullet.length;
         bullet[me] = Bodies.rectangle(position.x, position.y, 28, 11, {
             botType: "missile",
+            ownerId: (typeof multiplayer !== 'undefined' && multiplayer.enabled)
+                ? ((multiplayer.isSpawningRemote && multiplayer.spawningRemoteOwnerId) ? multiplayer.spawningRemoteOwnerId : multiplayer.playerId)
+                : null,
             angle: m.angle,
             friction: 0,
             frictionStatic: 0,
@@ -2830,6 +2844,9 @@ const b = {
         bullet[me] = Bodies.polygon(position.x, position.y, 6, RADIUS, {
             isUpgraded: tech.isFoamBotUpgrade,
             botType: "foam",
+            ownerId: (typeof multiplayer !== 'undefined' && multiplayer.enabled)
+                ? ((multiplayer.isSpawningRemote && multiplayer.spawningRemoteOwnerId) ? multiplayer.spawningRemoteOwnerId : multiplayer.playerId)
+                : null,
             angle: dir,
             friction: 0,
             frictionStatic: 0,
@@ -2888,6 +2905,9 @@ const b = {
         bullet[me] = Bodies.polygon(position.x, position.y, 3, RADIUS, {
             isUpgraded: tech.isLaserBotUpgrade,
             botType: "laser",
+            ownerId: (typeof multiplayer !== 'undefined' && multiplayer.enabled)
+                ? ((multiplayer.isSpawningRemote && multiplayer.spawningRemoteOwnerId) ? multiplayer.spawningRemoteOwnerId : multiplayer.playerId)
+                : null,
             angle: dir,
             friction: 0,
             frictionStatic: 0,
@@ -2953,7 +2973,8 @@ const b = {
                     }
                 }
                 //hit target with laser
-                if (this.lockedOn && this.lockedOn.alive && m.energy > this.drainThreshold) {
+                if (this.lockedOn && this.lockedOn.alive && m.energy > this.drainThreshold &&
+                    (!(typeof multiplayer !== 'undefined' && multiplayer.enabled) || !this.ownerId || this.ownerId === multiplayer.playerId)) {
                     m.energy -= tech.laserFieldDrain * tech.isLaserDiode * this.drain
                     b.laser(this.vertices[0], this.lockedOn.position, b.dmgScale * this.laserDamage * tech.laserDamage, tech.laserReflections, false, 0.4) //tech.laserDamage = 0.16
                     // laser(where = {
@@ -2979,6 +3000,9 @@ const b = {
         bullet[me] = Bodies.polygon(position.x, position.y, 4, RADIUS, {
             isUpgraded: tech.isBoomBotUpgrade,
             botType: "boom",
+            ownerId: (typeof multiplayer !== 'undefined' && multiplayer.enabled)
+                ? ((multiplayer.isSpawningRemote && multiplayer.spawningRemoteOwnerId) ? multiplayer.spawningRemoteOwnerId : multiplayer.playerId)
+                : null,
             angle: dir,
             friction: 0,
             frictionStatic: 0,
@@ -3018,9 +3042,9 @@ const b = {
                 if (distanceToPlayer > 100) { //if far away move towards player
                     if (this.explode) {
                         if (tech.isImmuneExplosion && m.energy > 1.43) {
-                            b.explosion(this.position, this.explode);
+                            b.explosion(this.position, this.explode, "rgba(255,25,0,0.6)", false, this.ownerId || null);
                         } else {
-                            b.explosion(this.position, Math.max(0, Math.min(this.explode, (distanceToPlayer - 70) / b.explosionRange())));
+                            b.explosion(this.position, Math.max(0, Math.min(this.explode, (distanceToPlayer - 70) / b.explosionRange())), "rgba(255,25,0,0.6)", false, this.ownerId || null);
                         }
                         this.explode = 0;
                     }
@@ -3066,6 +3090,9 @@ const b = {
         const RADIUS = 21
         bullet[me] = Bodies.polygon(position.x, position.y, 5, RADIUS, {
             botType: "plasma",
+            ownerId: (typeof multiplayer !== 'undefined' && multiplayer.enabled)
+                ? ((multiplayer.isSpawningRemote && multiplayer.spawningRemoteOwnerId) ? multiplayer.spawningRemoteOwnerId : multiplayer.playerId)
+                : null,
             angle: dir,
             friction: 0,
             frictionStatic: 0,
@@ -3116,7 +3143,8 @@ const b = {
                     const sub = Vector.sub(this.lockedOn.position, this.position)
                     const DIST = Vector.magnitude(sub);
                     const unit = Vector.normalise(sub)
-                    if (DIST < tech.isPlasmaRange * 450 && m.energy > this.drainThreshold) {
+                    if (DIST < tech.isPlasmaRange * 450 && m.energy > this.drainThreshold &&
+                        (!(typeof multiplayer !== 'undefined' && multiplayer.enabled) || !this.ownerId || this.ownerId === multiplayer.playerId)) {
                         m.energy -= 0.005;
                         // if (m.energy < 0) {
                         //     m.fieldCDcycle = m.cycle + 120;
