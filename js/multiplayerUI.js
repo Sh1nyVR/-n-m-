@@ -171,33 +171,15 @@ const multiplayerUI = {
     async showJoinLobby() {
         this.removeMenu('join-lobby-menu');
 
-        const lobbies = await multiplayer.getPublicLobbies();
-
-        let lobbiesList = '';
-        if (lobbies.length === 0) {
-            lobbiesList = '<p class="mp-empty">No public lobbies available.</p>';
-        } else {
-            lobbiesList = '<div class="mp-lobby-list">';
-            lobbies.forEach((lobby) => {
-                const lobbyName = this.escapeHtml(lobby.name || 'Unnamed Lobby');
-                const gameMode = this.escapeHtml((lobby.gameMode || 'adventure').toUpperCase());
-                lobbiesList += `
-                    <button class="mp-lobby-row" data-lobby-id="${this.escapeHtml(lobby.id)}" type="button">
-                        <span class="mp-lobby-name">${lobbyName}</span>
-                        <span class="mp-lobby-meta">${gameMode} | Players: ${lobby.playerCount}</span>
-                    </button>
-                `;
-            });
-            lobbiesList += '</div>';
-        }
-
         const html = `
             <div class="mp-overlay mp-fade-in" style="z-index: 21;">
                 <div class="mp-card mp-card-wide">
                     <h2 class="mp-title">Join Lobby</h2>
 
                     <h3 class="mp-section-title">Public Lobbies</h3>
-                    ${lobbiesList}
+                    <div id="mp-public-lobbies">
+                        <p class="mp-empty">Loading public lobbies...</p>
+                    </div>
 
                     <div class="mp-divider"></div>
 
@@ -216,9 +198,39 @@ const multiplayerUI = {
         container.innerHTML = html;
         document.body.appendChild(container);
 
-        container.querySelectorAll('.mp-lobby-row').forEach((btn) => {
-            btn.addEventListener('click', () => this.joinLobby(btn.dataset.lobbyId));
-        });
+        try {
+            const lobbies = await multiplayer.getPublicLobbies();
+            const listContainer = document.getElementById('mp-public-lobbies');
+            if (!listContainer) return;
+
+            if (lobbies.length === 0) {
+                listContainer.innerHTML = '<p class="mp-empty">No public lobbies available.</p>';
+                return;
+            }
+
+            let lobbiesList = '<div class="mp-lobby-list">';
+            lobbies.forEach((lobby) => {
+                const lobbyName = this.escapeHtml(lobby.name || 'Unnamed Lobby');
+                const gameMode = this.escapeHtml((lobby.gameMode || 'adventure').toUpperCase());
+                lobbiesList += `
+                    <button class="mp-lobby-row" data-lobby-id="${this.escapeHtml(lobby.id)}" type="button">
+                        <span class="mp-lobby-name">${lobbyName}</span>
+                        <span class="mp-lobby-meta">${gameMode} | Players: ${lobby.playerCount}</span>
+                    </button>
+                `;
+            });
+            lobbiesList += '</div>';
+            listContainer.innerHTML = lobbiesList;
+
+            container.querySelectorAll('.mp-lobby-row').forEach((btn) => {
+                btn.addEventListener('click', () => this.joinLobby(btn.dataset.lobbyId));
+            });
+        } catch (error) {
+            const listContainer = document.getElementById('mp-public-lobbies');
+            if (listContainer) {
+                listContainer.innerHTML = `<p class="mp-empty">Failed to load lobbies: ${this.escapeHtml(error.message || 'Unknown error')}</p>`;
+            }
+        }
     },
 
     // Create lobby

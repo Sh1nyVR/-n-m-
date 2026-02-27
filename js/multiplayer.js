@@ -343,28 +343,44 @@ const multiplayer = {
         if (!authOk) {
             throw new Error('Firebase Auth anonymous sign-in failed. Enable Firebase Authentication and the Anonymous provider, or relax Realtime Database rules for testing.');
         }
-        const lobbiesRef = database.ref('lobbies');
+        const now = Date.now();
+        const staleCutoff = now - (1000 * 60 * 60 * 12); // 12 hours
+        const lobbiesRef = database.ref('lobbies').orderByChild('createdAt').limitToLast(200);
         const snapshot = await lobbiesRef.once('value');
         
         if (!snapshot.exists()) return [];
         
         const lobbies = [];
+        const staleLobbyRemovals = [];
         snapshot.forEach((childSnapshot) => {
             const lobby = childSnapshot.val();
             const playerCount = Object.keys(lobby.players || {}).length;
             const lobbyName = lobby.name || 'Unnamed Lobby';
+            const createdAt = Number(lobby.createdAt) || 0;
+            const isStale = !createdAt || createdAt < staleCutoff;
+            const isEmpty = playerCount === 0;
             
+            // Opportunistic cleanup for stale/empty lobbies
+            if (isEmpty || isStale) {
+                staleLobbyRemovals.push(database.ref(`lobbies/${childSnapshot.key}`).remove().catch(() => {}));
+                return;
+            }
+
             // Filter: only show public lobbies with at least 1 player and not named "Unnamed Lobby"
-            if (!lobby.isPrivate && playerCount > 0 && lobbyName !== 'Unnamed Lobby') {
+            if (!lobby.isPrivate && lobbyName !== 'Unnamed Lobby') {
                 lobbies.push({
                     id: childSnapshot.key,
                     name: lobbyName,
                     playerCount: playerCount,
                     gameMode: lobby.gameMode,
-                    createdAt: lobby.createdAt
+                    createdAt: createdAt
                 });
             }
         });
+
+        if (staleLobbyRemovals.length) {
+            Promise.all(staleLobbyRemovals).catch(() => {});
+        }
         
         return lobbies;
     },
@@ -372,13 +388,23 @@ const multiplayer = {
     // Leave current lobby
     async leaveLobby() {
         if (!this.lobbyId) return;
+        const lobbyId = this.lobbyId;
+        const wasHost = this.isHost;
         this.detachLobbyListeners();
         
-        const playerRef = database.ref(`lobbies/${this.lobbyId}/players/${this.playerId}`);
+        const playerRef = database.ref(`lobbies/${lobbyId}/players/${this.playerId}`);
         await playerRef.remove();
         
-        // Don't delete lobby when host leaves - allow it to persist for others to join
-        // Lobbies will be cleaned up by Firebase TTL or manual cleanup
+        // Host leaving: remove lobby entirely to prevent orphaned stale rooms.
+        if (wasHost) {
+            await database.ref(`lobbies/${lobbyId}`).remove().catch(() => {});
+        } else {
+            // Non-host cleanup: if lobby became empty for any reason, remove it.
+            const lobbySnap = await database.ref(`lobbies/${lobbyId}/players`).once('value').catch(() => null);
+            if (lobbySnap && lobbySnap.exists() === false) {
+                await database.ref(`lobbies/${lobbyId}`).remove().catch(() => {});
+            }
+        }
         
         this.enabled = false;
         this.lobbyId = null;
