@@ -3541,6 +3541,8 @@ const spawn = {
         };
     },
     shield(target, x, y, chance = Math.min(0.02 + simulation.difficulty * 0.005, 0.2), isExtraShield = false) {
+        // In multiplayer, ONLY the host may spawn shield mobs.
+        if (typeof multiplayer !== 'undefined' && multiplayer.enabled && !multiplayer.isHost) return;
         if (this.allowShields && Math.random() < chance) {
             // Set spawn tracking for shield
             currentSpawnFunction = "shield";
@@ -3607,6 +3609,8 @@ const spawn = {
         }
     },
     groupShield(targets, x, y, radius, stiffness = 0.4) {
+        // In multiplayer, ONLY the host may spawn group shields.
+        if (typeof multiplayer !== 'undefined' && multiplayer.enabled && !multiplayer.isHost) return;
         const nodes = targets.length
         currentSpawnFunction = "groupShield"; currentSpawnParams = { targets, radius, stiffness };
         mobs.spawn(x, y, 9, radius, "rgba(220,220,255,0.9)");
@@ -3673,6 +3677,8 @@ const spawn = {
         };
     },
     spawnOrbitals(who, radius, chance = Math.min(0.25 + simulation.difficulty * 0.005)) {
+        // In multiplayer, ONLY the host may spawn orbital mobs.
+        if (typeof multiplayer !== 'undefined' && multiplayer.enabled && !multiplayer.isHost) return;
         if (Math.random() < chance) {
             // simulation.difficulty = 50
             const len = Math.floor(Math.min(15, 3 + Math.sqrt(simulation.difficulty))) // simulation.difficulty = 40 on hard mode level 10
@@ -3681,6 +3687,8 @@ const spawn = {
         }
     },
     orbital(who, radius, phase, speed) {
+        // In multiplayer, ONLY the host may spawn orbital mobs.
+        if (typeof multiplayer !== 'undefined' && multiplayer.enabled && !multiplayer.isHost) return;
         // for (let i = 0, len = 7; i < len; i++) spawn.orbital(me, radius + 250, 2 * Math.PI / len * i)
         currentSpawnFunction = "orbital";
         currentSpawnParams = { targetNetId: who.netId, radius, phase, speed };
@@ -3902,6 +3910,8 @@ const spawn = {
     // body and map spawns ******************************************************************************
     //**********************************************************************************************
     wireHead() {
+        // These are level graphics implemented as pseudo-mobs; avoid client-only desync in multiplayer.
+        if (typeof multiplayer !== 'undefined' && multiplayer.enabled && !multiplayer.isHost) return;
         //not a mob, just a graphic for level 1
         const breakingPoint = 1300
         currentSpawnFunction = "wireHead"; currentSpawnParams = {};
@@ -3969,6 +3979,7 @@ const spawn = {
         };
     },
     wireKnee() {
+        if (typeof multiplayer !== 'undefined' && multiplayer.enabled && !multiplayer.isHost) return;
         //not a mob, just a graphic for level 1
         const breakingPoint = 1425
         currentSpawnFunction = "wireKnee"; currentSpawnParams = {};
@@ -4021,6 +4032,7 @@ const spawn = {
         };
     },
     wireKneeLeft() {
+        if (typeof multiplayer !== 'undefined' && multiplayer.enabled && !multiplayer.isHost) return;
         //not a mob, just a graphic for level 1
         const breakingPoint = 1400
         currentSpawnFunction = "wireKneeLeft"; currentSpawnParams = {};
@@ -4073,6 +4085,7 @@ const spawn = {
         };
     },
     wireFoot() {
+        if (typeof multiplayer !== 'undefined' && multiplayer.enabled && !multiplayer.isHost) return;
         //not a mob, just a graphic for level 1
         const breakingPoint = 1350
         currentSpawnFunction = "wireFoot"; currentSpawnParams = {};
@@ -4124,6 +4137,7 @@ const spawn = {
         };
     },
     wireFootLeft() {
+        if (typeof multiplayer !== 'undefined' && multiplayer.enabled && !multiplayer.isHost) return;
         //not a mob, just a graphic for level 1
         const breakingPoint = 1325
         currentSpawnFunction = "wireFootLeft"; currentSpawnParams = {};
