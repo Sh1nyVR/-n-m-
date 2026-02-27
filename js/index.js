@@ -1182,6 +1182,9 @@ function cycle() {
             simulation.clearMap();
             level.start();
             if (__restoreRandom) __restoreRandom();
+            if (typeof multiplayer !== 'undefined' && multiplayer.enabled && typeof multiplayer.onLevelStarted === 'function') {
+                multiplayer.onLevelStarted();
+            }
         }
         
         // Tick poly miners if in progressive mode

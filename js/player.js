@@ -484,7 +484,12 @@ const m = {
                 m.health = 0;
                 m.displayHealth();
                 if (typeof multiplayer.syncPlayerDied === 'function') multiplayer.syncPlayerDied();
-                if (typeof simulation !== 'undefined' && simulation.makeTextLog) simulation.makeTextLog(`Player has died: <span class='color-text'>${multiplayer.settings?.name || 'Player'}</span>`);
+                if (typeof simulation !== 'undefined' && simulation.makeTextLog) {
+                    simulation.makeTextLog(
+                        `<span class='color-text'>${multiplayer.settings?.name || 'Player'}</span> has died. ` +
+                        `Your <span style='color:#ffb347'>heart</span> dropped; teammates can carry it to the next level to revive you.`
+                    );
+                }
                 document.getElementById("text-log").style.opacity = 1;
                 document.getElementById("fade-out").style.opacity = 0;
                 simulation.paused = false;

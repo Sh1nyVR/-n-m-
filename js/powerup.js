@@ -352,42 +352,27 @@ const powerUps = {
             simulation.updateGunHUD();
         }
     },
-    revive: {
-        name: "revive",
-        color: "#fcbf2d",
+    heart: {
+        name: "heart",
+        color: "#ff5a5a",
         size() {
-            return 36;
+            return 28;
         },
         effect() {
             if (typeof multiplayer === 'undefined' || !multiplayer.enabled) {
-                simulation.makeTextLog(`<span class='color-text'>revive</span> is multiplayer-only`);
-                powerUps.spawn(m.pos.x, m.pos.y, (m.health < 0.6 ? 'heal' : 'ammo'));
+                simulation.makeTextLog(`<span class='color-text'>heart</span> is multiplayer-only`);
                 return;
             }
-            const dead = (typeof multiplayer.getDeadPlayers === 'function') ? multiplayer.getDeadPlayers() : [];
-            if (!dead || dead.length === 0) {
-                simulation.makeTextLog(`no dead players to revive`);
-                powerUps.spawn(m.pos.x, m.pos.y, (m.health < 0.6 ? 'heal' : 'ammo'));
+            const targetId = this.mode;
+            if (!targetId) {
+                simulation.makeTextLog(`heart had no linked player`);
                 return;
             }
-            let text = ``;
-            text += `<div class='cancel' onclick='powerUps.endDraft("revive",true)'>✕</div>`
-            text += `<h3 style='color:#fff; text-align:left; margin:0;'>revive</h3>`
-            for (const p of dead) {
-                const swatch = `<span style="display:inline-block;width:18px;height:18px;border-radius:50%;background:${p.color||'#999'};margin-right:8px;vertical-align:middle;"></span>`
-                text += `<div class="choose-grid-module" onclick="powerUps.revive.use('${p.id}')"><div class="grid-title">${swatch} ${p.name||'player'}</div>bring them back with no tech or guns</div>`
+            if (typeof multiplayer.collectReviveHeart === 'function') {
+                multiplayer.collectReviveHeart(targetId);
             }
-            document.getElementById('choose-grid').innerHTML = text;
-            powerUps.showDraft();
-        },
-        use(targetId) {
-            try {
-                if (typeof multiplayer !== 'undefined' && multiplayer.enabled && typeof multiplayer.syncPlayerRevive === 'function') {
-                    multiplayer.syncPlayerRevive(targetId);
-                    simulation.makeTextLog(`<span class='color-text'>revive</span> → <span class='color-text'>${(multiplayer.players&&multiplayer.players[targetId]&&multiplayer.players[targetId].name)||'player'}</span>`);
-                }
-            } catch(e) {}
-            powerUps.endDraft('revive');
+            const who = (typeof multiplayer.getPlayerLabel === 'function') ? multiplayer.getPlayerLabel(targetId) : 'player';
+            simulation.makeTextLog(`picked up <span style='color:#ffb347'>${who}'s heart</span>`);
         }
     },
     field: {
@@ -739,17 +724,6 @@ const powerUps = {
         }
     },
     spawnRandomPowerUp(x, y) { //mostly used after mob dies,  doesn't always return a power up
-        // Multiplayer-only: small chance to spawn revive if someone is dead
-        if (typeof multiplayer !== 'undefined' && multiplayer.enabled) {
-            try {
-                const dead = (typeof multiplayer.getDeadPlayers === 'function') ? multiplayer.getDeadPlayers() : [];
-                if (dead && dead.length && Math.random() < 0.02) { // ~2% base chance when someone is dead
-                    powerUps.spawn(x, y, "revive");
-                    return;
-                }
-            } catch (e) {}
-        }
-
         if ((Math.random() * Math.random() - 0.3 > Math.sqrt(m.health) && !tech.isEnergyHealth) || Math.random() < 0.04) { //spawn heal chance is higher at low health
             powerUps.spawn(x, y, "heal");
             return;

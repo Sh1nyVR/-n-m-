@@ -175,10 +175,14 @@ const multiplayer = {
     
     // Track dead players
     deadPlayers: new Set(),
+    // Players queued for revival on the next level via collected hearts.
+    pendingReviveTargets: new Set(),
     allPlayersDeadCheckStarted: false,
     
     // Vertex sync counter for periodic full mob vertex resyncs
     mobVertexSyncCounter: 0,
+    // Controls how often we include full mob vertices in host snapshots.
+    mobShapeSyncCounter: 0,
     
     // Initialize multiplayer system
     init() {
@@ -243,6 +247,8 @@ const multiplayer = {
         this.eventCutoffTime = Date.now();
         this.physicsCutoffTime = this.eventCutoffTime;
         this.blockSyncGraceUntil = this.eventCutoffTime + 1200;
+        this.pendingReviveTargets.clear();
+        this.deadPlayers.clear();
         
         const createdAt = Date.now();
         const lobbyData = {
@@ -381,6 +387,8 @@ const multiplayer = {
         this.eventCutoffTime = Date.now();
         this.physicsCutoffTime = this.eventCutoffTime;
         this.blockSyncGraceUntil = this.eventCutoffTime + 1200;
+        this.pendingReviveTargets.clear();
+        this.deadPlayers.clear();
         
         // Add self to lobby
         const playerRef = database.ref(`lobbies/${this.lobbyId}/players/${this.playerId}`);
@@ -540,6 +548,8 @@ const multiplayer = {
         this.eventCutoffTime = 0;
         this.physicsCutoffTime = 0;
         this.blockSyncGraceUntil = 0;
+        this.pendingReviveTargets.clear();
+        this.deadPlayers.clear();
         
         console.log('Left lobby');
     },
@@ -1539,12 +1549,18 @@ const multiplayer = {
     // Sync that this player died (for UI only)
     syncPlayerDied() {
         if (!this.enabled || !this.lobbyId) return;
+        const deathPos = (typeof m !== 'undefined' && m.pos && isFinite(m.pos.x) && isFinite(m.pos.y))
+            ? { x: m.pos.x, y: m.pos.y }
+            : null;
         const eventRef = database.ref(`lobbies/${this.lobbyId}/events`).push();
         eventRef.set({
             type: 'player_died',
             playerId: this.playerId,
+            data: { position: deathPos },
             timestamp: Date.now()
         });
+        // Host does not receive its own event (ignored by listener), so drop its heart directly.
+        if (this.isHost) this.spawnReviveHeart(this.playerId, deathPos);
     },
 
     // Request a revive of a specific playerId
@@ -1559,6 +1575,120 @@ const multiplayer = {
         });
         // Remove from dead players list
         this.deadPlayers.delete(targetPlayerId);
+        this.pendingReviveTargets.delete(targetPlayerId);
+        // Listener ignores own events, so self-revive must apply immediately.
+        if (targetPlayerId === this.playerId && typeof this.reviveLocal === 'function') {
+            this.reviveLocal();
+        }
+    },
+
+    getPlayerLabel(playerId) {
+        if (!playerId) return 'player';
+        if (playerId === this.playerId) return (this.settings && this.settings.name) || 'player';
+        return (this.players && this.players[playerId] && this.players[playerId].name) || 'player';
+    },
+
+    hasActiveHeartFor(targetPlayerId) {
+        if (!targetPlayerId || typeof powerUp === 'undefined') return false;
+        for (let i = 0; i < powerUp.length; i++) {
+            const p = powerUp[i];
+            if (!p) continue;
+            if (p.name === 'heart' && p.mode === targetPlayerId) return true;
+        }
+        return false;
+    },
+
+    spawnReviveHeart(targetPlayerId, position = null) {
+        if (!this.enabled || !this.lobbyId || !this.isHost || !targetPlayerId) return;
+        if (this.pendingReviveTargets.has(targetPlayerId)) return;
+        if (this.hasActiveHeartFor(targetPlayerId)) return;
+        if (typeof powerUps === 'undefined' || typeof powerUps.directSpawn !== 'function') return;
+
+        let px = null;
+        let py = null;
+        if (position && isFinite(position.x) && isFinite(position.y)) {
+            px = position.x;
+            py = position.y;
+        } else if (targetPlayerId === this.playerId && typeof m !== 'undefined' && m.pos) {
+            px = m.pos.x;
+            py = m.pos.y;
+        } else if (this.players && this.players[targetPlayerId] && isFinite(this.players[targetPlayerId].x) && isFinite(this.players[targetPlayerId].y)) {
+            px = this.players[targetPlayerId].x;
+            py = this.players[targetPlayerId].y;
+        }
+        if (!isFinite(px) || !isFinite(py)) return;
+        powerUps.directSpawn(px, py, 'heart', true, targetPlayerId);
+    },
+
+    syncHeartPickupRequest(targetPlayerId) {
+        if (!this.enabled || !this.lobbyId || !targetPlayerId) return;
+        const eventRef = database.ref(`lobbies/${this.lobbyId}/events`).push();
+        eventRef.set({
+            type: 'revive_heart_pickup',
+            playerId: this.playerId,
+            data: { targetId: targetPlayerId },
+            timestamp: Date.now()
+        });
+    },
+
+    syncHeartPickupConfirmed(targetPlayerId, carrierId, difficultyDelta = 1) {
+        if (!this.enabled || !this.lobbyId || !targetPlayerId) return;
+        const eventRef = database.ref(`lobbies/${this.lobbyId}/events`).push();
+        eventRef.set({
+            type: 'revive_heart_confirmed',
+            playerId: this.playerId,
+            data: {
+                targetId: targetPlayerId,
+                carrierId: carrierId || this.playerId,
+                difficultyDelta: Math.max(0, Number(difficultyDelta) || 0)
+            },
+            timestamp: Date.now()
+        });
+    },
+
+    announceHeartPickup(targetPlayerId, carrierId, difficultyDelta = 1) {
+        if (typeof simulation === 'undefined' || typeof simulation.makeTextLog !== 'function') return;
+        const targetName = this.getPlayerLabel(targetPlayerId);
+        const carrierName = this.getPlayerLabel(carrierId);
+        simulation.makeTextLog(
+            `<span style='color:#ff6b6b'>${carrierName}</span> picked up <span style='color:#ffb347'>${targetName}'s heart</span>. ` +
+            `<span style='color:#f44'>Threat increased (+${difficultyDelta})</span>. ` +
+            `Bring it to the next level to revive them.`
+        );
+    },
+
+    collectReviveHeart(targetPlayerId) {
+        if (!this.enabled || !this.lobbyId || !targetPlayerId) return;
+        if (this.isHost) {
+            this.processHeartPickupAsHost(targetPlayerId, this.playerId);
+        } else {
+            this.syncHeartPickupRequest(targetPlayerId);
+        }
+    },
+
+    processHeartPickupAsHost(targetPlayerId, carrierId) {
+        if (!this.enabled || !this.lobbyId || !this.isHost || !targetPlayerId) return;
+        if (this.pendingReviveTargets.has(targetPlayerId)) return;
+        this.pendingReviveTargets.add(targetPlayerId);
+        const difficultyDelta = 1;
+        if (typeof level !== 'undefined' && typeof level.difficultyIncrease === 'function') {
+            level.difficultyIncrease(difficultyDelta);
+        }
+        this.announceHeartPickup(targetPlayerId, carrierId, difficultyDelta);
+        this.syncHeartPickupConfirmed(targetPlayerId, carrierId, difficultyDelta);
+    },
+
+    onLevelStarted() {
+        if (!this.enabled || !this.isHost) return;
+        if (!this.pendingReviveTargets || this.pendingReviveTargets.size === 0) return;
+        const reviveList = Array.from(this.pendingReviveTargets);
+        this.pendingReviveTargets.clear();
+        for (const targetId of reviveList) {
+            this.syncPlayerRevive(targetId);
+        }
+        if (typeof simulation !== 'undefined' && typeof simulation.makeTextLog === 'function') {
+            simulation.makeTextLog(`<span style='color:#7CFC00'>Heart revival activated:</span> ${reviveList.length} player(s) restored on this level.`);
+        }
     },
 
     // Check if all players are dead and return to lobby
@@ -1966,11 +2096,19 @@ const multiplayer = {
                 // Show notification that a player died
                 try {
                     const p = (this.players && this.players[event.playerId]) || {};
+                    const deathPos = (event.data && event.data.position && isFinite(event.data.position.x) && isFinite(event.data.position.y))
+                        ? event.data.position
+                        : (p && isFinite(p.x) && isFinite(p.y) ? { x: p.x, y: p.y } : null);
                     if (typeof simulation !== 'undefined' && simulation.makeTextLog) {
-                        simulation.makeTextLog(`<span class='color-text'>${p.name || 'Player'}</span> has died. Find an <span style='color:#FFD700'>ANGELIC-HEXIL</span> to revive them!`);
+                        simulation.makeTextLog(
+                            `<span class='color-text'>${p.name || 'Player'}</span> has fallen. ` +
+                            `Their <span style='color:#ffb347'>heart</span> dropped. Carry it to the next level to revive them.`
+                        );
                     }
                     // Track dead player
                     this.deadPlayers.add(event.playerId);
+                    // Host is authoritative for heart drops.
+                    if (this.isHost) this.spawnReviveHeart(event.playerId, deathPos);
                     // Check if all players are dead
                     this.checkAllPlayersDead();
                 } catch (e) { /* no-op */ }
@@ -1982,6 +2120,7 @@ const multiplayer = {
                     if (targetId) {
                         // Remove from dead players list
                         this.deadPlayers.delete(targetId);
+                        this.pendingReviveTargets.delete(targetId);
                         
                         // If this client is the revive target, restore local player state
                         if (this.playerId === targetId && typeof this.reviveLocal === 'function') {
@@ -1993,6 +2132,30 @@ const multiplayer = {
                             simulation.makeTextLog(`<span class='color-text'>${who.name || 'Player'}</span> was revived`);
                         }
                     }
+                } catch (e) { /* no-op */ }
+                break;
+            }
+            case 'revive_heart_pickup': {
+                try {
+                    if (this.isHost) {
+                        const targetId = event.data && event.data.targetId;
+                        if (targetId) this.processHeartPickupAsHost(targetId, event.playerId);
+                    }
+                } catch (e) { /* no-op */ }
+                break;
+            }
+            case 'revive_heart_confirmed': {
+                try {
+                    const targetId = event.data && event.data.targetId;
+                    const carrierId = event.data && event.data.carrierId;
+                    const difficultyDelta = Math.max(0, Number(event.data && event.data.difficultyDelta) || 0);
+                    if (!targetId) break;
+                    if (this.pendingReviveTargets.has(targetId)) break;
+                    this.pendingReviveTargets.add(targetId);
+                    if (!this.isHost && difficultyDelta > 0 && typeof level !== 'undefined' && typeof level.difficultyIncrease === 'function') {
+                        level.difficultyIncrease(difficultyDelta);
+                    }
+                    this.announceHeartPickup(targetId, carrierId, difficultyDelta || 1);
                 } catch (e) { /* no-op */ }
                 break;
             }
@@ -2867,6 +3030,7 @@ const multiplayer = {
             name: powerup.name,
             color: powerup.color,
             size: powerup.size,
+            mode: (powerup.mode !== undefined ? powerup.mode : null),
             position: { x: powerup.position.x, y: powerup.position.y },
             velocity: { x: powerup.velocity.x, y: powerup.velocity.y },
             timestamp: Date.now()
@@ -3092,6 +3256,9 @@ const multiplayer = {
         );
         
         Matter.Body.setVelocity(powerUp[index], powerupData.velocity);
+        if (powerupData.mode !== undefined && powerupData.mode !== null) {
+            powerUp[index].mode = powerupData.mode;
+        }
         powerUp[index].networkId = powerupData.id;
         Matter.World.add(engine.world, powerUp[index]);
         this.localPowerupIds.set(index, powerupData.id);
@@ -3252,6 +3419,7 @@ const multiplayer = {
                     if (typeof cat !== 'undefined' && m.collisionFilter && m.collisionFilter.category === cat.mobBullet) continue;
                     // Assign persistent netId lazily on host
                     if (!m.netId) m.netId = `${this.playerId}_m${this.mobNetIdCounter++}`;
+                    const includeVerts = (this.mobShapeSyncCounter++ % 6 === 0);
 
                     // Skip mobs temporarily claimed by a client
                     const authorityId = m.netId || i;
@@ -3288,8 +3456,8 @@ const multiplayer = {
                         isBoss: !!m.isBoss,
                         isDropPowerUp: !!m.isDropPowerUp,
                         isExtraShield: !!m.isExtraShield,
-                        // ALWAYS send vertices so clients can render correct shapes
-                        verts: (m.vertices && m.vertices.length >= 3) ? m.vertices.map(v => ({ x: v.x, y: v.y })) : null
+                        // Send full vertices periodically to keep payloads small but deterministic.
+                        verts: (includeVerts && m.vertices && m.vertices.length >= 3) ? m.vertices.map(v => ({ x: v.x, y: v.y })) : null
                     });
                 }
             }
@@ -3842,12 +4010,12 @@ const multiplayer = {
                     this.ghostMobLastUpdate.set(netId, now);
                 }
                 
-                // Remove ghost mobs that haven't been updated in 5 seconds (likely dead/despawned)
+                // Remove any host-tracked mobs that haven't been updated in 5 seconds.
                 for (let i = mob.length - 1; i >= 0; i--) {
-                    if (mob[i] && mob[i].isGhost && mob[i].netId) {
+                    if (mob[i] && mob[i].netId) {
                         const lastUpdate = this.ghostMobLastUpdate.get(mob[i].netId) || 0;
                         if (now - lastUpdate > 5000) { // 5 seconds timeout
-                            console.log(`🗑️ Removing stale ghost mob ${i} with netId ${mob[i].netId} - not updated for 5s`);
+                            console.log(`🗑️ Removing stale mob ${i} with netId ${mob[i].netId} - not updated for 5s`);
                             const deadNetId = mob[i].netId;
                             this.removeMobLocal(mob[i], i);
                             this.ghostMobLastUpdate.delete(deadNetId);

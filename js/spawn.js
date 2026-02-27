@@ -32,7 +32,6 @@ const spawn = {
         "spawner",
         "ghoster",
         "sneaker",
-        "angelicHexil", "angelicHexil", "angelicHexil", // Angelic mob that drops revive powerups - more common for multiplayer
     ],
     allowedGroupList: ["chaser", "spinner", "striker", "springer", "laser", "focuser", "beamer", "exploder", "spawner", "shooter", "launcher", "stabber", "sniper", "pulsar"],
     setSpawnList() { //this is run at the start of each new level to determine the possible mobs for the level
@@ -752,101 +751,6 @@ const spawn = {
 
         me.do = function() {
             this.seePlayerByLookingAt();
-            this.attraction();
-            this.checkStatus();
-        };
-    },
-    angelicHexil(x, y, radius = 40 + Math.floor(15 * Math.random()), forceSpawn = false) {
-        // Rare angelic mob that drops revive powerups - ONLY spawns in multiplayer
-        // In multiplayer, ONLY the host spawns mobs (unless forceSpawn is true for multiplayer sync)
-        if (!forceSpawn && typeof multiplayer !== 'undefined' && multiplayer.enabled && !multiplayer.isHost) {
-            return; // Clients never spawn mobs during normal gameplay
-        }
-        
-        currentSpawnFunction = "angelicHexil"; currentSpawnParams = { radius };
-        mobs.spawn(x, y, 6, radius, "#FFD700"); // 6 sides = hexagon, golden yellow color
-        let me = mob[mob.length - 1];
-        me.stroke = "#FFA500"; // Orange stroke
-        me.accelMag = 0.0003 * simulation.accelScale; // Slow movement
-        me.memory = 180; // Long memory
-        me.seeAtDistance2 = 2000000; // Good vision range
-        me.frictionAir = 0.003; // Floaty movement
-        me.isAngelicHexil = true;
-        
-        // High health - 5x normal
-        Matter.Body.setDensity(me, 0.005); // 5x normal density = 5x health
-        
-        // Spin constantly
-        me.spinSpeed = 0.015 + Math.random() * 0.01;
-        me.spinDirection = Math.random() < 0.5 ? 1 : -1;
-        
-        // Override onDeath to ALWAYS drop revive powerup
-        me.onDeath = function() {
-            // Always drop revive powerup
-            if (typeof powerUps !== 'undefined' && typeof powerUps.spawn === 'function') {
-                powerUps.spawn(this.position.x, this.position.y, "revive", false);
-                
-                // Sync powerup spawn in multiplayer
-                if (typeof multiplayer !== 'undefined' && multiplayer.enabled && multiplayer.isHost) {
-                    // The powerup will be synced automatically via the normal powerup spawn mechanism
-                    const lastPowerupIndex = powerUp.length - 1;
-                    if (lastPowerupIndex >= 0) {
-                        multiplayer.syncPowerupSpawn(lastPowerupIndex);
-                    }
-                }
-            }
-            
-            // Visual effect
-            if (typeof simulation !== 'undefined' && simulation.drawList) {
-                for (let i = 0; i < 8; i++) {
-                    simulation.drawList.push({
-                        x: this.position.x + (Math.random() - 0.5) * 100,
-                        y: this.position.y + (Math.random() - 0.5) * 100,
-                        radius: 30 + Math.random() * 40,
-                        color: "rgba(255, 215, 0, 0.6)",
-                        time: 30 + Math.random() * 20
-                    });
-                }
-            }
-        };
-        
-        me.do = function() {
-            // Constantly spin
-            if (!this.isStunned) {
-                Matter.Body.setAngularVelocity(this, this.spinSpeed * this.spinDirection);
-            }
-            
-            // Glow effect - pulse between bright and dim
-            const pulse = 0.7 + 0.3 * Math.sin(simulation.cycle * 0.05);
-            this.fill = `rgba(255, 215, 0, ${pulse})`;
-            
-            // Draw halo effect
-            if (typeof ctx !== 'undefined') {
-                ctx.save();
-                ctx.globalAlpha = 0.3 * pulse;
-                ctx.beginPath();
-                ctx.arc(this.position.x, this.position.y, this.radius * 1.5, 0, 2 * Math.PI);
-                ctx.strokeStyle = "#FFD700";
-                ctx.lineWidth = 3;
-                ctx.stroke();
-                ctx.restore();
-                
-                // Draw spinning particles
-                const particleCount = 6;
-                for (let i = 0; i < particleCount; i++) {
-                    const angle = (simulation.cycle * 0.02) + (i * Math.PI * 2 / particleCount);
-                    const dist = this.radius * 1.3;
-                    const px = this.position.x + Math.cos(angle) * dist;
-                    const py = this.position.y + Math.sin(angle) * dist;
-                    
-                    ctx.beginPath();
-                    ctx.arc(px, py, 3, 0, 2 * Math.PI);
-                    ctx.fillStyle = "#FFFFFF";
-                    ctx.fill();
-                }
-            }
-            
-            this.seePlayerCheck();
             this.attraction();
             this.checkStatus();
         };
