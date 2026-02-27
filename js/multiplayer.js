@@ -190,7 +190,10 @@ const multiplayer = {
             const ok = this.init();
             if (!ok) throw new Error('Multiplayer init failed');
         }
-        await ensureFirebaseAuth();
+        const authOk = await ensureFirebaseAuth();
+        if (!authOk) {
+            throw new Error('Firebase Auth anonymous sign-in failed. Enable Firebase Authentication and the Anonymous provider, or relax Realtime Database rules for testing.');
+        }
         if (this.lobbyId) {
             try {
                 await database.ref(`lobbies/${this.lobbyId}/players/${this.playerId}`).remove();
@@ -267,7 +270,10 @@ const multiplayer = {
             const ok = this.init();
             if (!ok) throw new Error('Multiplayer init failed');
         }
-        await ensureFirebaseAuth();
+        const authOk = await ensureFirebaseAuth();
+        if (!authOk) {
+            throw new Error('Firebase Auth anonymous sign-in failed. Enable Firebase Authentication and the Anonymous provider, or relax Realtime Database rules for testing.');
+        }
         if (this.lobbyId && this.lobbyId !== lobbyId) {
             try {
                 await database.ref(`lobbies/${this.lobbyId}/players/${this.playerId}`).remove();
@@ -333,7 +339,10 @@ const multiplayer = {
     
     // Get list of public lobbies
     async getPublicLobbies() {
-        await ensureFirebaseAuth();
+        const authOk = await ensureFirebaseAuth();
+        if (!authOk) {
+            throw new Error('Firebase Auth anonymous sign-in failed. Enable Firebase Authentication and the Anonymous provider, or relax Realtime Database rules for testing.');
+        }
         const lobbiesRef = database.ref('lobbies');
         const snapshot = await lobbiesRef.once('value');
         
