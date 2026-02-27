@@ -115,6 +115,10 @@ const multiplayer = {
     },
     // Ignore stale lobby events created before we joined/created the lobby
     eventCutoffTime: 0,
+    // Ignore stale physics snapshots from before join/level transition.
+    physicsCutoffTime: 0,
+    // Brief post-transition grace period to avoid violent snap-corrections.
+    blockSyncGraceUntil: 0,
     // Guards to prevent remote replay from re-broadcasting back to Firebase
     isApplyingRemoteBotSpawn: false,
     suppressBotAutoSync: false,
@@ -237,6 +241,8 @@ const multiplayer = {
         this.isHost = true;
         this.enabled = true;
         this.eventCutoffTime = Date.now();
+        this.physicsCutoffTime = this.eventCutoffTime;
+        this.blockSyncGraceUntil = this.eventCutoffTime + 1200;
         
         const createdAt = Date.now();
         const lobbyData = {
@@ -373,6 +379,8 @@ const multiplayer = {
         this.enabled = true;
         this.isHost = false;
         this.eventCutoffTime = Date.now();
+        this.physicsCutoffTime = this.eventCutoffTime;
+        this.blockSyncGraceUntil = this.eventCutoffTime + 1200;
         
         // Add self to lobby
         const playerRef = database.ref(`lobbies/${this.lobbyId}/players/${this.playerId}`);
@@ -530,6 +538,8 @@ const multiplayer = {
         this.gameStarted = false;
         this.players = {};
         this.eventCutoffTime = 0;
+        this.physicsCutoffTime = 0;
+        this.blockSyncGraceUntil = 0;
         
         console.log('Left lobby');
     },
@@ -2836,6 +2846,11 @@ const multiplayer = {
         // Reset physics sync flag to force full resync on new level
         this.hasInitialBlockSync = false;
         this.fullBlockSyncCount = 0; // Reset counter for multiple full syncs
+        this.physicsCutoffTime = Date.now();
+        this.blockSyncGraceUntil = this.physicsCutoffTime + 1800;
+        if (this.enabled && this.lobbyId && this.playerId && typeof database !== 'undefined') {
+            database.ref(`lobbies/${this.lobbyId}/physics/${this.playerId}`).remove().catch(() => {});
+        }
         
         console.log('✅ Multiplayer tracking data cleared');
     },
@@ -3170,6 +3185,26 @@ const multiplayer = {
     sanitizeValue(val, fallback = 0) {
         return (isFinite(val) && !isNaN(val)) ? val : fallback;
     },
+
+    // Ropes/chains/elevator constraints are solver-driven; hard remote snaps cause jitter/explosions.
+    isBodyConstrained(bodyRef) {
+        if (!bodyRef) return false;
+        try {
+            if (typeof cons !== 'undefined' && Array.isArray(cons)) {
+                for (let i = 0; i < cons.length; i++) {
+                    const c = cons[i];
+                    if (c && (c.bodyA === bodyRef || c.bodyB === bodyRef)) return true;
+                }
+            }
+            if (typeof consBB !== 'undefined' && Array.isArray(consBB)) {
+                for (let i = 0; i < consBB.length; i++) {
+                    const c = consBB[i];
+                    if (c && (c.bodyA === bodyRef || c.bodyB === bodyRef)) return true;
+                }
+            }
+        } catch (e) { /* no-op */ }
+        return false;
+    },
     
     // Sync physics state to Firebase
     syncPhysics() {
@@ -3263,6 +3298,7 @@ const multiplayer = {
                 // Sync ALL blocks
                 for (let i = 0; i < body.length; i++) {
                     if (body[i] && body[i].position && body[i].id) {
+                        if (body[i].isStatic || this.isBodyConstrained(body[i])) continue;
                         // Firebase doesn't allow Infinity - clamp to large number
                         const mass = isFinite(body[i].mass) ? body[i].mass : 999999;
                         const friction = isFinite(body[i].friction) ? body[i].friction : 0.4;
@@ -3292,6 +3328,7 @@ const multiplayer = {
                 let count = 0;
                 for (let i = 0; i < body.length && count < maxBlocks; i++) {
                     if (!body[i] || !body[i].position || !body[i].id) continue;
+                    if (body[i].isStatic || this.isBodyConstrained(body[i])) continue;
                     const bodyId = body[i].id;
                     const authKey = `block_${i}`;
                     
@@ -3343,7 +3380,8 @@ const multiplayer = {
             if (typeof m !== 'undefined' && m.holdingTarget && m.holdingTarget.id) {
                 const heldBodyId = m.holdingTarget.id;
                 const heldIndex = (typeof body !== 'undefined') ? body.indexOf(m.holdingTarget) : -1;
-                if (!physicsData.blocks.some(b => (isFinite(heldIndex) && b.index === heldIndex) || b.bodyId === heldBodyId)) {
+                if (!this.isBodyConstrained(m.holdingTarget) &&
+                    !physicsData.blocks.some(b => (isFinite(heldIndex) && b.index === heldIndex) || b.bodyId === heldBodyId)) {
                     if (Math.random() < 0.05) {
                         console.log(`📦 Syncing held block ID ${heldBodyId} at (${m.holdingTarget.position.x.toFixed(0)}, ${m.holdingTarget.position.y.toFixed(0)})`);
                     }
@@ -3446,6 +3484,7 @@ const multiplayer = {
     // Apply physics update from other players
     applyPhysicsUpdate(physicsData, fromPlayerId) {
         const isFromHost = fromPlayerId === this.hostId;
+        if (!physicsData || !isFinite(physicsData.timestamp) || physicsData.timestamp < this.physicsCutoffTime) return;
 
         // Update mobs from host authority only
         if (isFromHost && physicsData.mobs && typeof mob !== 'undefined') {
@@ -3821,6 +3860,7 @@ const multiplayer = {
                 }
                 
                 if (targetBody) {
+                    if (targetBody.isStatic || this.isBodyConstrained(targetBody)) continue;
                     // If update is from host, always accept (host has final authority)
                     // If from client, accept if we're NOT touching it (or if we're the host accepting client authority)
                     const authId = isFinite(blockData.index) ? blockData.index : blockData.bodyId;
@@ -3841,11 +3881,12 @@ const multiplayer = {
                     const dx = blockData.x - currentPos.x;
                     const dy = blockData.y - currentPos.y;
                     const dist2 = dx*dx + dy*dy;
+                    const inGraceWindow = Date.now() < this.blockSyncGraceUntil;
                     
                     // Always update, but vary the lerp factor based on distance
                     let lerpFactor = 0.15; // Very gentle interpolation to avoid jitter
                     
-                    if (dist2 > 40000) { // More than 200 units away - snap to position
+                    if (!inGraceWindow && dist2 > 40000) { // More than 200 units away - snap to position
                         lerpFactor = 1.0;
                     } else if (dist2 > 10000) { // More than 100 units away - moderate catch up
                         lerpFactor = 0.4;
@@ -3872,7 +3913,7 @@ const multiplayer = {
                     Matter.Body.setAngularVelocity(targetBody, blockData.angularVelocity || 0);
 
                     // Apply authoritative shape data when provided (fixes incorrect block sizes/shapes).
-                    if (Array.isArray(blockData.vertices) && blockData.vertices.length >= 3) {
+                    if (!inGraceWindow && Array.isArray(blockData.vertices) && blockData.vertices.length >= 3) {
                         try {
                             let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
                             for (let i = 0; i < blockData.vertices.length; i++) {
