@@ -79,7 +79,10 @@ const multiplayer = {
     physicsSyncInterval: 33, // Sync physics every 33ms (30 times/sec) for smoother mob movement
     // Block sync state
     fullBlockSyncCount: 0, // How many times we've done a full block sync after level load
-    maxFullBlockSyncs: 5, // Do 5 full syncs after level transition to ensure all clients receive data
+    maxFullBlockSyncs: 5, // Minimum burst of full syncs after level transition
+    lastFullBlockSyncTime: 0,
+    fullBlockSyncDurationMs: 7000, // Keep periodic full sync alive during first seconds of a level
+    fullBlockSyncIntervalMs: 250,
     // Interpolation caches
     mobInterp: new Map(), // index -> {x,y,angle,t}
     // Host authority
@@ -90,6 +93,9 @@ const multiplayer = {
     // Stable mob identifiers
     mobNetIdCounter: 0,
     mobIndexByNetId: new Map(), // netId -> index
+    // Stable block identifiers
+    blockNetIdCounter: 0,
+    blockIndexByNetId: new Map(), // netId -> index
     
     // Client authority tracking (which player is manipulating which object)
     clientAuthority: new Map(), // objectId -> {playerId, type, timestamp}
@@ -248,6 +254,9 @@ const multiplayer = {
         this.eventCutoffTime = Date.now();
         this.physicsCutoffTime = this.eventCutoffTime;
         this.blockSyncGraceUntil = this.eventCutoffTime + 1200;
+        this.lastFullBlockSyncTime = 0;
+        this.blockIndexByNetId.clear();
+        this.blockNetIdCounter = 0;
         this.pendingReviveTargets.clear();
         this.deadPlayers.clear();
         
@@ -388,6 +397,9 @@ const multiplayer = {
         this.eventCutoffTime = Date.now();
         this.physicsCutoffTime = this.eventCutoffTime;
         this.blockSyncGraceUntil = this.eventCutoffTime + 1200;
+        this.lastFullBlockSyncTime = 0;
+        this.blockIndexByNetId.clear();
+        this.blockNetIdCounter = 0;
         this.pendingReviveTargets.clear();
         this.deadPlayers.clear();
         
@@ -2544,9 +2556,6 @@ const multiplayer = {
             return;
         }
         
-        // CRITICAL: Clear tracking data BEFORE level transition to prevent phantom mobs
-        this.clearLevelData();
-        
         // Follow the same transition path as local nextLevel, without rebroadcasting
         if (typeof level !== 'undefined' && typeof level.nextLevel === 'function') {
             const playerName = (this.players && this.players[event.playerId] && this.players[event.playerId].name) || 'Player';
@@ -2941,8 +2950,10 @@ const multiplayer = {
     // Auto-claim authority when player physically collides with objects
     checkAndClaimCollisionAuthority() {
         if (!this.enabled || !this.lobbyId || typeof player === 'undefined' || typeof body === 'undefined') return;
+        if (this.isHost) return;
         
         const now = Date.now();
+        const inGraceWindow = now < this.blockSyncGraceUntil;
         
         // Check for collisions with blocks (physics bodies)
         for (let i = 0; i < body.length; i++) {
@@ -2954,13 +2965,14 @@ const multiplayer = {
             const dist2 = dx * dx + dy * dy;
             
             // If player is touching this block (within 80 units)
-            if (dist2 < 6400) {
-                const authKey = `block_${i}`;
+            if (!inGraceWindow && dist2 < 6400) {
+                const blockAuthorityId = body[i].netId || i;
+                const authKey = `block_${blockAuthorityId}`;
                 const existing = this.clientAuthority.get(authKey);
                 
                 // Renew if not claimed, expired, or about to expire (within 200ms)
                 if (!existing || now > existing.expiry - 200) {
-                    this.claimAuthority('block', i, 1000); // 1 second authority - continuously renewed
+                    this.claimAuthority('block', blockAuthorityId, 1000); // 1 second authority - continuously renewed
                 }
             }
         }
@@ -3031,18 +3043,27 @@ const multiplayer = {
         // Clear mob tracking
         this.mobIndexByNetId.clear();
         this.mobNetIdCounter = 0; // Reset counter for new level
+        this.blockIndexByNetId.clear();
+        this.blockNetIdCounter = 0;
+        this.lastFullBlockSyncTime = 0;
+        if (typeof body !== 'undefined' && Array.isArray(body)) {
+            for (let i = 0; i < body.length; i++) {
+                if (body[i] && body[i].netId) delete body[i].netId;
+            }
+        }
         
         // Clear powerup tracking
         this.localPowerupIds.clear();
         this.networkPowerups.clear();
         this.powerupIdCounter = 0;
         
-        // Clear client authority claims LOCALLY (old objects are gone)
-        // NOTE: We do NOT clear Firebase authority database because:
-        // 1. Old claims will expire naturally (they have timestamps)
-        // 2. New level has new body IDs that won't match old claims
-        // 3. Clearing Firebase triggers listener to wipe local map, breaking new claims
+        // Clear client authority claims locally.
         this.clientAuthority.clear();
+        // Host also clears shared authority claims to prevent stale block ownership
+        // from affecting new-level objects that may reuse indices.
+        if (this.enabled && this.lobbyId && this.isHost && typeof database !== 'undefined') {
+            database.ref(`lobbies/${this.lobbyId}/authority`).remove().catch(() => {});
+        }
         
         // Clear ghost mob tracking if it exists
         if (this.ghostMobLastUpdate) {
@@ -3053,7 +3074,7 @@ const multiplayer = {
         this.hasInitialBlockSync = false;
         this.fullBlockSyncCount = 0; // Reset counter for multiple full syncs
         this.physicsCutoffTime = Date.now();
-        this.blockSyncGraceUntil = this.physicsCutoffTime + 1800;
+        this.blockSyncGraceUntil = this.physicsCutoffTime + 2200;
         if (this.enabled && this.lobbyId && this.playerId && typeof database !== 'undefined') {
             database.ref(`lobbies/${this.lobbyId}/physics/${this.playerId}`).remove().catch(() => {});
         }
@@ -3426,6 +3447,16 @@ const multiplayer = {
         }
     },
 
+    rebuildBlockIndexMap() {
+        this.blockIndexByNetId.clear();
+        if (typeof body === 'undefined' || !Array.isArray(body)) return;
+        for (let i = 0; i < body.length; i++) {
+            if (body[i] && body[i].netId) {
+                this.blockIndexByNetId.set(body[i].netId, i);
+            }
+        }
+    },
+
     removeMobLocal(targetMob, knownIndex = -1) {
         if (!targetMob || typeof mob === 'undefined') return false;
         let idx = knownIndex;
@@ -3529,18 +3560,23 @@ const multiplayer = {
         if (typeof body !== 'undefined') {
             // After level load: do multiple full syncs to ensure all clients receive data
             // Otherwise: periodically resync all blocks
+            const inWarmupWindow = this.isHost && (now - this.physicsCutoffTime < this.fullBlockSyncDurationMs);
             const needsMultipleFullSyncs = this.fullBlockSyncCount < this.maxFullBlockSyncs;
-            const syncAllBlocks = this.isHost && (needsMultipleFullSyncs || Math.random() < 0.01); // 1% chance to resync all
+            const timeForWarmupFullSync = inWarmupWindow && (now - this.lastFullBlockSyncTime >= this.fullBlockSyncIntervalMs);
+            const syncAllBlocks = this.isHost && (needsMultipleFullSyncs || timeForWarmupFullSync || Math.random() < 0.01); // 1% periodic resync
             if (syncAllBlocks) {
-                if (needsMultipleFullSyncs) {
+                if (needsMultipleFullSyncs || inWarmupWindow) {
                     this.fullBlockSyncCount++;
                     console.log(`📦 Full block sync ${this.fullBlockSyncCount}/${this.maxFullBlockSyncs} after level load`);
                 }
+                this.lastFullBlockSyncTime = now;
                 this.hasInitialBlockSync = true;
                 // Sync ALL blocks
                 for (let i = 0; i < body.length; i++) {
                     if (body[i] && body[i].position && body[i].id) {
                         if (body[i].isStatic || this.isBodyConstrained(body[i])) continue;
+                        if (this.isHost && !body[i].netId) body[i].netId = `${this.playerId}_b${this.blockNetIdCounter++}`;
+                        if (body[i].netId) this.blockIndexByNetId.set(body[i].netId, i);
                         // Firebase doesn't allow Infinity - clamp to large number
                         const mass = isFinite(body[i].mass) ? body[i].mass : 999999;
                         const friction = isFinite(body[i].friction) ? body[i].friction : 0.4;
@@ -3548,6 +3584,7 @@ const multiplayer = {
                         
                         physicsData.blocks.push({
                             index: i,
+                            netId: body[i].netId || null,
                             bodyId: body[i].id, // Use Matter.js body ID instead of array index
                             x: this.sanitizeValue(body[i].position.x),
                             y: this.sanitizeValue(body[i].position.y),
@@ -3571,8 +3608,11 @@ const multiplayer = {
                 for (let i = 0; i < body.length && count < maxBlocks; i++) {
                     if (!body[i] || !body[i].position || !body[i].id) continue;
                     if (body[i].isStatic || this.isBodyConstrained(body[i])) continue;
+                    if (this.isHost && !body[i].netId) body[i].netId = `${this.playerId}_b${this.blockNetIdCounter++}`;
+                    if (body[i].netId) this.blockIndexByNetId.set(body[i].netId, i);
                     const bodyId = body[i].id;
-                    const authKey = `block_${i}`;
+                    const blockAuthorityId = body[i].netId || i;
+                    const authKey = `block_${blockAuthorityId}`;
                     
                     if (this.isHost) {
                         // Host syncs moving blocks OR blocks under client authority
@@ -3584,6 +3624,7 @@ const multiplayer = {
                         if (isMoving || hasClientAuthority) {
                             physicsData.blocks.push({
                                 index: i,
+                                netId: body[i].netId || null,
                                 bodyId: bodyId,
                                 x: this.sanitizeValue(body[i].position.x),
                                 y: this.sanitizeValue(body[i].position.y),
@@ -3596,6 +3637,7 @@ const multiplayer = {
                             count++;
                         }
                     } else {
+                        if (now < this.blockSyncGraceUntil) continue;
                         // Clients: only sync blocks we're actively touching
                         const auth = this.clientAuthority.get(authKey);
                         if (auth && auth.playerId === this.playerId) {
@@ -3604,6 +3646,7 @@ const multiplayer = {
                             }
                             physicsData.blocks.push({
                                 index: i,
+                                netId: body[i].netId || null,
                                 bodyId: bodyId,
                                 x: this.sanitizeValue(body[i].position.x),
                                 y: this.sanitizeValue(body[i].position.y),
@@ -3620,8 +3663,12 @@ const multiplayer = {
             }
             // Always include currently held block if any (prioritize for visibility)
             if (typeof m !== 'undefined' && m.holdingTarget && m.holdingTarget.id) {
+                if (this.isHost && !m.holdingTarget.netId) m.holdingTarget.netId = `${this.playerId}_b${this.blockNetIdCounter++}`;
                 const heldBodyId = m.holdingTarget.id;
                 const heldIndex = (typeof body !== 'undefined') ? body.indexOf(m.holdingTarget) : -1;
+                if (m.holdingTarget.netId && isFinite(heldIndex) && heldIndex >= 0) {
+                    this.blockIndexByNetId.set(m.holdingTarget.netId, heldIndex);
+                }
                 if (!this.isBodyConstrained(m.holdingTarget) &&
                     !physicsData.blocks.some(b => (isFinite(heldIndex) && b.index === heldIndex) || b.bodyId === heldBodyId)) {
                     if (Math.random() < 0.05) {
@@ -3629,6 +3676,7 @@ const multiplayer = {
                     }
                     physicsData.blocks.unshift({
                         index: heldIndex,
+                        netId: m.holdingTarget.netId || null,
                         bodyId: heldBodyId,
                         x: this.sanitizeValue(m.holdingTarget.position.x),
                         y: this.sanitizeValue(m.holdingTarget.position.y),
@@ -4122,28 +4170,55 @@ const multiplayer = {
                 console.log(`📥 Applying ${physicsData.blocks.length} block updates from player ${fromPlayerId}`);
             }
             for (const blockData of physicsData.blocks) {
-                // Resolve block by shared body[] index first.
-                // Fallback to nearest-position only when index is missing/invalid.
+                // Resolve by stable netId first.
                 let targetBody = null;
-                let resolvedIndex = isFinite(blockData.index) ? blockData.index : -1;
-                if (resolvedIndex >= 0 && resolvedIndex < body.length && body[resolvedIndex]) {
-                    targetBody = body[resolvedIndex];
+                let resolvedIndex = -1;
+                if (blockData.netId && this.blockIndexByNetId.has(blockData.netId)) {
+                    const mappedIndex = this.blockIndexByNetId.get(blockData.netId);
+                    if (isFinite(mappedIndex) && mappedIndex >= 0 && mappedIndex < body.length && body[mappedIndex]) {
+                        targetBody = body[mappedIndex];
+                        resolvedIndex = mappedIndex;
+                    } else {
+                        this.blockIndexByNetId.delete(blockData.netId);
+                    }
+                }
+                if (!targetBody && blockData.netId) {
+                    for (let i = 0; i < body.length; i++) {
+                        if (body[i] && body[i].netId === blockData.netId) {
+                            targetBody = body[i];
+                            resolvedIndex = i;
+                            this.blockIndexByNetId.set(blockData.netId, i);
+                            break;
+                        }
+                    }
+                }
+                // Fallback to shared body[] index if netId isn't bound yet.
+                if (!targetBody) {
+                    resolvedIndex = isFinite(blockData.index) ? blockData.index : -1;
+                    if (resolvedIndex >= 0 && resolvedIndex < body.length && body[resolvedIndex]) {
+                        const candidate = body[resolvedIndex];
+                        if (!blockData.netId || !candidate.netId || candidate.netId === blockData.netId) {
+                            targetBody = candidate;
+                        }
+                    }
                 }
                 // Then try direct Matter body id match (more stable when array indices drift).
                 if (!targetBody && isFinite(blockData.bodyId)) {
                     for (let i = 0; i < body.length; i++) {
                         if (body[i] && body[i].id === blockData.bodyId) {
+                            if (blockData.netId && body[i].netId && body[i].netId !== blockData.netId) continue;
                             targetBody = body[i];
                             resolvedIndex = i;
                             break;
                         }
                     }
                 }
-                let minDist2 = 22500; // 150 unit threshold squared
+                let minDist2 = (Date.now() < this.blockSyncGraceUntil) ? 160000 : 22500; // 400 / 150 unit threshold squared
 
                 if (!targetBody) {
                     for (let i = 0; i < body.length; i++) {
                         if (!body[i] || !body[i].position) continue;
+                        if (blockData.netId && body[i].netId && body[i].netId !== blockData.netId) continue;
                         const dx = body[i].position.x - blockData.x;
                         const dy = body[i].position.y - blockData.y;
                         const dist2 = dx * dx + dy * dy;
@@ -4161,9 +4236,18 @@ const multiplayer = {
                 
                 if (targetBody) {
                     if (targetBody.isStatic || this.isBodyConstrained(targetBody)) continue;
+                    if (blockData.netId) {
+                        if (targetBody.netId && targetBody.netId !== blockData.netId) {
+                            this.blockIndexByNetId.delete(targetBody.netId);
+                        }
+                        targetBody.netId = blockData.netId;
+                        if (isFinite(resolvedIndex) && resolvedIndex >= 0) {
+                            this.blockIndexByNetId.set(blockData.netId, resolvedIndex);
+                        }
+                    }
                     // If update is from host, always accept (host has final authority)
                     // If from client, accept if we're NOT touching it (or if we're the host accepting client authority)
-                    const authId = isFinite(blockData.index) ? blockData.index : blockData.bodyId;
+                    const authId = blockData.netId || (isFinite(blockData.index) ? blockData.index : blockData.bodyId);
                     const authKey = `block_${authId}`;
                     const isFromHost = (fromPlayerId === this.hostId) || (this.players[fromPlayerId] && this.players[fromPlayerId].isHost);
                     

@@ -205,6 +205,14 @@ const level = {
     },
     nextLevel(skipSync = false) {
         level.levelsCleared++;
+
+        // Reset multiplayer object/mob tracking on EVERY local level transition
+        // (host and clients). This prevents stale block authority/index data from
+        // leaking into the next map.
+        if (typeof multiplayer !== 'undefined' && multiplayer.enabled && level.onLevel >= 0 &&
+            typeof multiplayer.clearLevelData === 'function') {
+            multiplayer.clearLevelData();
+        }
         
         // Sync level change to multiplayer (only if game is actually running)
         if (!skipSync && typeof multiplayer !== 'undefined' && multiplayer.enabled && level.onLevel >= 0) {
