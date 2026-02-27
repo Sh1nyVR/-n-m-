@@ -349,13 +349,13 @@ const polyTree = {
         const baseWidth = (maxCol + 1) * (nodeW + gapX) + 200;
         const baseHeight = (maxRow + 1) * (nodeH + gapY) + 200;
         
-        let html = `<div style="display:flex; justify-content:center;"><svg id="polytree-svg" viewBox="0 0 ${baseWidth} ${baseHeight}" width="100%" preserveAspectRatio="xMidYMin meet" style="height:auto; max-width: 100%; background: #f9f9f9; border: 2px solid #333; cursor: grab;">
+        let html = `<div class="polytree-canvas-wrap"><svg id="polytree-svg" class="polytree-svg" viewBox="0 0 ${baseWidth} ${baseHeight}" width="100%" preserveAspectRatio="xMidYMin meet">
             <g id="tree-group" transform="translate(${this.panX}, ${this.panY}) scale(${this.zoom})">`;
         
         // Draw tree labels at the top
-        html += `<text x="${100 + 1 * (nodeW + gapX)}" y="50" text-anchor="middle" fill="#a8f" font-size="28" font-weight="bold" font-family="Arial">◆ TECH TREE</text>`;
-        html += `<text x="${100 + 5 * (nodeW + gapX)}" y="50" text-anchor="middle" fill="#f80" font-size="28" font-weight="bold" font-family="Arial">⚡ GUN TREE</text>`;
-        html += `<text x="${100 + 9 * (nodeW + gapX)}" y="50" text-anchor="middle" fill="#0af" font-size="28" font-weight="bold" font-family="Arial">◉ FIELD TREE</text>`;
+        html += `<text x="${100 + 1 * (nodeW + gapX)}" y="50" text-anchor="middle" fill="#9ab4ff" font-size="27" font-weight="bold" font-family="Trebuchet MS">TECH CORE</text>`;
+        html += `<text x="${100 + 5 * (nodeW + gapX)}" y="50" text-anchor="middle" fill="#ffb866" font-size="27" font-weight="bold" font-family="Trebuchet MS">GUN SYSTEMS</text>`;
+        html += `<text x="${100 + 9 * (nodeW + gapX)}" y="50" text-anchor="middle" fill="#66e0ff" font-size="27" font-weight="bold" font-family="Trebuchet MS">FIELD SYSTEMS</text>`;
         
         // Draw dependency lines with curves
         this.techTree.forEach(tech => {
@@ -368,7 +368,7 @@ const polyTree = {
                     const depX = 100 + depTech.col * (nodeW + gapX);
                     const depY = 100 + depTech.row * (nodeH + gapY);
                     const isPathOwned = this.ownedTech.includes(tech.id) && this.ownedTech.includes(depId);
-                    const lineColor = isPathOwned ? '#0a0' : '#ccc';
+                    const lineColor = isPathOwned ? '#2ad08a' : '#3e527a';
                     const midY = (depY + nodeH + y) / 2;
                     // Curved path for tree-like appearance
                     html += `<path d="M${depX + nodeW/2},${depY + nodeH} Q${depX + nodeW/2},${midY} ${x + nodeW/2},${y}" stroke="${lineColor}" stroke-width="3" fill="none"/>`;
@@ -385,50 +385,50 @@ const polyTree = {
             
             let fillColor, strokeColor, textColor;
             if (isOwned) {
-                fillColor = '#c8ffc8';
-                strokeColor = '#0a0';
-                textColor = '#000';
+                fillColor = '#123e2d';
+                strokeColor = '#2ad08a';
+                textColor = '#eafff4';
             } else if (canBuy) {
-                fillColor = '#fff8c8';
-                strokeColor = '#fa0';
-                textColor = '#000';
+                fillColor = '#453410';
+                strokeColor = '#ffbf4a';
+                textColor = '#fff8e8';
             } else {
-                fillColor = '#fff';
-                strokeColor = '#999';
-                textColor = '#666';
+                fillColor = '#1b2740';
+                strokeColor = '#51658d';
+                textColor = '#b6c8e8';
             }
             
             // Clean description for tooltip
             const cleanDesc = tech.description.replace(/<[^>]*>/g, '').replace(/&nbsp;/g, ' ');
             
             // Type indicator colors
-            let typeColor = '#a8f'; // default purple for tech
-            let typeIcon = '◆';
+            let typeColor = '#9ab4ff';
+            let typeIcon = 'T';
             if (tech.type === 'gun') {
-                typeColor = '#f80';
-                typeIcon = '⚡';
+                typeColor = '#ffb866';
+                typeIcon = 'G';
             } else if (tech.type === 'field') {
-                typeColor = '#0af';
-                typeIcon = '◉';
+                typeColor = '#66e0ff';
+                typeIcon = 'F';
             }
             
             html += `<g class="tech-node" data-tech-id="${tech.id}" data-description="${cleanDesc.replace(/"/g, '&quot;')}" onclick="polyTree.buyTech('${tech.id}')" style="cursor: pointer;">`;
             html += `<rect x="${x}" y="${y}" width="${nodeW}" height="${nodeH}" rx="10" fill="${fillColor}" stroke="${strokeColor}" stroke-width="3"/>`;
             
             // Type indicator in corner
-            html += `<text x="${x + 8}" y="${y + 18}" fill="${typeColor}" font-size="16" font-weight="bold" font-family="Arial">${typeIcon}</text>`;
+            html += `<text x="${x + 8}" y="${y + 18}" fill="${typeColor}" font-size="13" font-weight="bold" font-family="Trebuchet MS">${typeIcon}</text>`;
             
             const displayName = tech.name.length > 20 ? tech.name.substring(0, 18) + '...' : tech.name;
-            html += `<text x="${x + nodeW/2}" y="${y + 28}" text-anchor="middle" fill="${textColor}" font-size="13" font-weight="bold" font-family="Arial">${displayName}</text>`;
+            html += `<text x="${x + nodeW/2}" y="${y + 28}" text-anchor="middle" fill="${textColor}" font-size="13" font-weight="bold" font-family="Trebuchet MS">${displayName}</text>`;
             
             if (isOwned) {
-                html += `<text x="${x + nodeW/2}" y="${y + 48}" text-anchor="middle" fill="#0a0" font-size="12" font-weight="bold" font-family="Arial">✓ OWNED</text>`;
+                html += `<text x="${x + nodeW/2}" y="${y + 48}" text-anchor="middle" fill="#7fffbd" font-size="12" font-weight="bold" font-family="Trebuchet MS">OWNED</text>`;
             } else {
                 // Poly diamond logo
                 const px = x + nodeW/2 - 30;
                 const py = y + 47;
-                html += `<polygon points="${px},${py-6} ${px+7},${py} ${px},${py+6} ${px-7},${py}" fill="#a8f" stroke="#66f" stroke-width="2"/>`;
-                html += `<text x="${x + nodeW/2 - 18}" y="${y + 50}" text-anchor="start" fill="${textColor}" font-size="13" font-family="Arial">${tech.cost}</text>`;
+                html += `<polygon points="${px},${py-6} ${px+7},${py} ${px},${py+6} ${px-7},${py}" fill="#7ca3ff" stroke="#3f6fff" stroke-width="2"/>`;
+                html += `<text x="${x + nodeW/2 - 18}" y="${y + 50}" text-anchor="start" fill="${textColor}" font-size="13" font-family="Trebuchet MS">${tech.cost}</text>`;
             }
             
             html += `</g>`;
@@ -437,56 +437,56 @@ const polyTree = {
         html += '</g></svg></div>';
         
         // Tooltip container
-        html += '<div id="tech-tooltip" style="display: none; position: fixed; background: rgba(0,0,0,0.9); color: #fff; padding: 12px 16px; border-radius: 8px; max-width: 350px; pointer-events: none; z-index: 1000; border: 2px solid #66f; box-shadow: 0 4px 12px rgba(0,0,0,0.5);"></div>';
+        html += '<div id="tech-tooltip" class="polytree-tooltip"></div>';
         
         // Poly Miner Upgrade Section
         const minerCost = this.getMinerCost();
         const canUpgradeMiner = simulation.polys >= minerCost && this.minerLevel < this.maxMinerLevel;
-        html += '<div style="margin: 20px; padding: 20px; border: 3px solid #a8f; background: linear-gradient(135deg, #f0f0ff 0%, #fff 100%); border-radius: 12px; box-shadow: 0 4px 8px rgba(0,0,0,0.1);">';
-        html += '<h2 style="margin: 0 0 15px 0; color: #66f; display: flex; align-items: center; gap: 10px;"><svg width="30" height="30"><polygon points="15,5 25,15 15,25 5,15" fill="#a8f" stroke="#66f" stroke-width="2"/></svg> POLY MINER</h2>';
-        html += `<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">`;
-        html += `<div><strong style="font-size: 18px;">Level: ${this.minerLevel} / ${this.maxMinerLevel}</strong><br><span style="color: #0a0; font-size: 16px;">Earning: ${this.polyPerSecond} polys/sec</span></div>`;
+        html += '<div class="polytree-panel">';
+        html += '<h2 style="display:flex; align-items:center; gap:10px; color:#c7d7ff;"><svg width="28" height="28"><polygon points="14,4 24,14 14,24 4,14" fill="#7ca3ff" stroke="#3f6fff" stroke-width="2"/></svg> Poly Miner</h2>';
+        html += `<div style="display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap;">`;
+        html += `<div><strong style="font-size: 18px;">Level: ${this.minerLevel} / ${this.maxMinerLevel}</strong><br><span style="color: #66e4a8; font-size: 16px;">Earning: ${this.polyPerSecond} polys/sec</span></div>`;
         if (this.minerLevel < this.maxMinerLevel) {
-            const btnColor = canUpgradeMiner ? '#0a0' : '#999';
             const btnText = canUpgradeMiner ? `Upgrade (${minerCost} polys)` : `Need ${minerCost} polys`;
-            html += `<button onclick="polyTree.upgradeMiner()" style="padding: 12px 24px; font-size: 18px; cursor: ${canUpgradeMiner ? 'pointer' : 'not-allowed'}; background: ${btnColor}; color: #fff; border: none; border-radius: 8px; font-weight: bold;">${btnText}</button>`;
+            const btnState = canUpgradeMiner ? '' : 'opacity:0.6; cursor:not-allowed;';
+            html += `<button onclick="polyTree.upgradeMiner()" class="mp-btn mp-btn-success" style="${btnState}">${btnText}</button>`;
         } else {
-            html += `<div style="padding: 12px 24px; font-size: 18px; background: #fa0; color: #fff; border-radius: 8px; font-weight: bold;">MAX LEVEL! 🎉</div>`;
+            html += '<div class="mp-pill" style="background: rgba(240,165,49,0.25); border-color: rgba(240,165,49,0.4);">Max Level</div>';
         }
         html += '</div>';
         if (this.minerLevel < this.maxMinerLevel) {
             const nextLevelProduction = Math.floor((this.minerLevel + 1) * Math.pow(1.05, (this.minerLevel + 1) * 0.5));
-            html += `<p style="margin: 5px 0 0 0; font-size: 14px; color: #666;">Next level: +${nextLevelProduction} polys/sec</p>`;
+            html += `<p class="mp-hint" style="color:#c4d2ee;">Next level: +${nextLevelProduction} polys/sec</p>`;
         }
         html += '</div>';
-        
+
         // Controls
-        html += '<div style="margin: 20px; padding: 15px; border: 2px solid #333; background: #fff; border-radius: 8px;">';
-        html += '<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">';
-        html += '<div style="display: flex; gap: 10px;">';
-        html += '<button onclick="polyTree.zoomIn()" style="padding: 8px 16px; font-size: 16px; cursor: pointer; background: #333; color: #fff; border: none; border-radius: 5px; font-weight: bold;">Zoom +</button>';
-        html += '<button onclick="polyTree.zoomOut()" style="padding: 8px 16px; font-size: 16px; cursor: pointer; background: #333; color: #fff; border: none; border-radius: 5px; font-weight: bold;">Zoom -</button>';
-        html += '<button onclick="polyTree.centerTree()" style="padding: 8px 16px; font-size: 16px; cursor: pointer; background: #0a0; color: #fff; border: none; border-radius: 5px; font-weight: bold;">Center</button>';
+        html += '<div class="polytree-panel">';
+        html += '<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:15px; gap:10px; flex-wrap:wrap;">';
+        html += '<div style="display:flex; gap:10px; flex-wrap:wrap;">';
+        html += '<button onclick="polyTree.zoomIn()" class="mp-btn mp-btn-secondary">Zoom +</button>';
+        html += '<button onclick="polyTree.zoomOut()" class="mp-btn mp-btn-secondary">Zoom -</button>';
+        html += '<button onclick="polyTree.centerTree()" class="mp-btn mp-btn-success">Center</button>';
         html += '</div>';
-        html += '<button onclick="polyTree.resetProgress()" style="padding: 8px 16px; font-size: 16px; cursor: pointer; background: #f44; color: #fff; border: none; border-radius: 5px; font-weight: bold;">Reset Progress</button>';
+        html += '<button onclick="polyTree.resetProgress()" class="mp-btn mp-btn-danger">Reset Progress</button>';
         html += '</div>';
-        html += '<div style="display: flex; align-items: center; gap: 10px; margin-bottom: 10px;">';
-        html += '<svg width="30" height="30"><polygon points="15,8 22,15 15,22 8,15" fill="#a8f" stroke="#66f" stroke-width="2"/></svg>';
+        html += '<div style="display:flex; align-items:center; gap:10px; margin-bottom:10px;">';
+        html += '<svg width="28" height="28"><polygon points="14,6 22,14 14,22 6,14" fill="#7ca3ff" stroke="#3f6fff" stroke-width="2"/></svg>';
         html += '<strong style="font-size: 18px;">Poly Currency</strong></div>';
-        
+
         const techCount = this.techTree.filter(t => t.type === 'tech').length;
         const gunCount = this.techTree.filter(t => t.type === 'gun').length;
         const fieldCount = this.techTree.filter(t => t.type === 'field').length;
-        
-        html += `<p><strong>3 INDEPENDENT TREES:</strong></p>`;
-        html += `<p><span style="color: #a8f; font-size: 18px;">◆</span> <strong>${techCount} Tech</strong> &nbsp; <span style="color: #f80; font-size: 18px;">⚡</span> <strong>${gunCount} Guns</strong> &nbsp; <span style="color: #0af; font-size: 18px;">◉</span> <strong>${fieldCount} Fields</strong></p>`;
-        html += '<p style="margin-top: 10px;">Each tree is SEPARATE - unlock items in ANY order within each tree!</p>';
-        html += '<p>• <span style="background: #c8ffc8; padding: 3px 8px; border: 2px solid #0a0; border-radius: 4px;">Green</span> = Owned</p>';
-        html += '<p>• <span style="background: #fff8c8; padding: 3px 8px; border: 2px solid #fa0; border-radius: 4px;">Yellow</span> = Can buy</p>';
-        html += '<p>• <span style="background: #fff; padding: 3px 8px; border: 2px solid #999; border-radius: 4px;">Gray</span> = Locked (need ANY parent in same tree)</p>';
-        html += '<p style="margin-top: 12px; font-weight: bold;">💰 MUCH CHEAPER! Base: 3 polys • Growth: 1.12x per row</p>';
+
+        html += `<p><strong>3 Independent Trees</strong></p>`;
+        html += `<p><span style="color: #9ab4ff; font-size: 18px;">T</span> <strong>${techCount} Tech</strong> &nbsp; <span style="color: #ffb866; font-size: 18px;">G</span> <strong>${gunCount} Guns</strong> &nbsp; <span style="color: #66e0ff; font-size: 18px;">F</span> <strong>${fieldCount} Fields</strong></p>`;
+        html += '<p style="margin-top: 10px;">Unlock items in any order within each tree.</p>';
+        html += '<p><span style="background: #123e2d; color:#eafff4; padding: 3px 8px; border: 1px solid #2ad08a; border-radius: 4px;">Owned</span></p>';
+        html += '<p><span style="background: #453410; color:#fff8e8; padding: 3px 8px; border: 1px solid #ffbf4a; border-radius: 4px;">Available</span></p>';
+        html += '<p><span style="background: #1b2740; color:#b6c8e8; padding: 3px 8px; border: 1px solid #51658d; border-radius: 4px;">Locked</span></p>';
+        html += '<p style="margin-top: 12px; font-weight: bold; color:#dce7ff;">Cheaper scaling: base 3 polys, growth 1.12x per row.</p>';
         html += '</div>';
-        
+
         container.innerHTML = html;
         this.setupEventListeners();
     },
@@ -542,7 +542,7 @@ const polyTree = {
                 const techData = this.techTree.find(t => t.id === techId);
                 
                 if (techData) {
-                    tooltip.innerHTML = `<strong style="font-size: 16px; color: #a8f;">${techData.name}</strong><br><br>${desc}<br><br><em style="color: #fa0;">Cost: ${techData.cost} polys</em>`;
+                    tooltip.innerHTML = `<strong style="font-size: 16px; color: #9ab4ff;">${techData.name}</strong><br><br>${desc}<br><br><em style="color: #ffbf4a;">Cost: ${techData.cost} polys</em>`;
                     tooltip.style.display = 'block';
                 }
             });

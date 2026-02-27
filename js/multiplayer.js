@@ -82,6 +82,43 @@ const multiplayer = {
         color: "#4a9eff",
         nameColor: "#ffffff"
     },
+    // Live DB listeners scoped to the current lobby session
+    listeners: {
+        players: null,
+        events: null,
+        powerups: null,
+        physics: null,
+        authority: null,
+        gameStart: null
+    },
+    // Ignore stale lobby events created before we joined/created the lobby
+    eventCutoffTime: 0,
+
+    setListener(key, ref, handlers) {
+        const prev = this.listeners[key];
+        if (prev && prev.ref && Array.isArray(prev.handlers)) {
+            for (const h of prev.handlers) {
+                try { prev.ref.off(h.event, h.fn); } catch (e) { /* no-op */ }
+            }
+        }
+
+        const normalizedHandlers = Array.isArray(handlers) ? handlers : [handlers];
+        for (const h of normalizedHandlers) {
+            ref.on(h.event, h.fn);
+        }
+        this.listeners[key] = { ref, handlers: normalizedHandlers };
+    },
+
+    detachLobbyListeners() {
+        for (const key of Object.keys(this.listeners)) {
+            const entry = this.listeners[key];
+            if (!entry || !entry.ref || !Array.isArray(entry.handlers)) continue;
+            for (const h of entry.handlers) {
+                try { entry.ref.off(h.event, h.fn); } catch (e) { /* no-op */ }
+            }
+            this.listeners[key] = null;
+        }
+    },
     
     // Save player settings to localStorage
     saveSettings() {
@@ -135,9 +172,18 @@ const multiplayer = {
             const ok = this.init();
             if (!ok) throw new Error('Multiplayer init failed');
         }
+        if (this.lobbyId) {
+            try {
+                await database.ref(`lobbies/${this.lobbyId}/players/${this.playerId}`).remove();
+            } catch (e) {
+                console.warn('Failed to remove player from previous lobby before create:', e);
+            }
+        }
+        this.detachLobbyListeners();
         this.lobbyId = 'lobby_' + Math.random().toString(36).substr(2, 9);
         this.isHost = true;
         this.enabled = true;
+        this.eventCutoffTime = Date.now();
         
         const lobbyData = {
             name: lobbyName || 'Unnamed Lobby',
@@ -199,6 +245,14 @@ const multiplayer = {
             const ok = this.init();
             if (!ok) throw new Error('Multiplayer init failed');
         }
+        if (this.lobbyId && this.lobbyId !== lobbyId) {
+            try {
+                await database.ref(`lobbies/${this.lobbyId}/players/${this.playerId}`).remove();
+            } catch (e) {
+                console.warn('Failed to remove player from previous lobby before join:', e);
+            }
+        }
+        this.detachLobbyListeners();
         const lobbyRef = database.ref('lobbies/' + lobbyId);
         const snapshot = await lobbyRef.once('value').catch((e) => {
             console.error('Failed to read lobby path:', 'lobbies/' + lobbyId, e);
@@ -221,6 +275,7 @@ const multiplayer = {
         this.lobbyId = lobbyId;
         this.enabled = true;
         this.isHost = false;
+        this.eventCutoffTime = Date.now();
         
         // Add self to lobby
         const playerRef = database.ref(`lobbies/${this.lobbyId}/players/${this.playerId}`);
@@ -284,6 +339,7 @@ const multiplayer = {
     // Leave current lobby
     async leaveLobby() {
         if (!this.lobbyId) return;
+        this.detachLobbyListeners();
         
         const playerRef = database.ref(`lobbies/${this.lobbyId}/players/${this.playerId}`);
         await playerRef.remove();
@@ -296,6 +352,7 @@ const multiplayer = {
         this.isHost = false;
         this.gameStarted = false;
         this.players = {};
+        this.eventCutoffTime = 0;
         
         console.log('Left lobby');
     },
@@ -303,21 +360,25 @@ const multiplayer = {
     // Listen to other players in the lobby
     listenToPlayers() {
         const playersRef = database.ref(`lobbies/${this.lobbyId}/players`);
-        
-        playersRef.on('value', (snapshot) => {
-            if (!snapshot.exists()) return;
-            
+        const onPlayersValue = (snapshot) => {
+            if (!snapshot.exists()) {
+                this.players = {};
+                return;
+            }
+
             const players = snapshot.val();
             this.players = {};
-            
+
             for (const [id, data] of Object.entries(players)) {
                 if (id !== this.playerId) {
                     this.players[id] = data;
                 }
             }
-            
+
             console.log('Updated player list:', Object.keys(this.players).length, 'other players');
-        });
+        };
+
+        this.setListener('players', playersRef, { event: 'value', fn: onPlayersValue });
     },
     
     // Get current player data
@@ -329,6 +390,7 @@ const multiplayer = {
                 name: this.settings.name,
                 color: this.settings.color,
                 nameColor: this.settings.nameColor,
+                isHost: !!this.isHost,
                 x: 0,
                 y: 0,
                 vx: 0,
@@ -353,6 +415,7 @@ const multiplayer = {
             name: this.settings.name,
             color: this.settings.color,
             nameColor: this.settings.nameColor,
+            isHost: !!this.isHost,
             x: posX,
             y: posY,
             vx: player.velocity.x || 0,
@@ -1172,7 +1235,7 @@ const multiplayer = {
     
     // Sync mob status effect (slow, stun, etc.)
     syncMobStatusEffect(mobNetId, effectType, effectData = {}) {
-        if (!this.enabled || !this.lobbyId) return;
+        if (!this.enabled || !this.lobbyId || !this.isHost) return;
         if (!mobNetId) return;
         
         console.log(`🎭 Syncing mob status effect: ${effectType} for ${mobNetId}`);
@@ -1559,7 +1622,7 @@ const multiplayer = {
     
     // Sync mob damage (for team combat)
     syncMobDamage(mobNetId, damage, health, alive) {
-        if (!this.enabled || !this.lobbyId) return;
+        if (!this.enabled || !this.lobbyId || !this.isHost) return;
         if (!mobNetId) return; // Must have netId
         
         // Throttle mob damage sync (only sync every few frames)
@@ -1581,7 +1644,7 @@ const multiplayer = {
     
     // Sync mob death (separate from damage for reliability)
     syncMobDeath(mobNetId, mobData = {}) {
-        if (!this.enabled || !this.lobbyId) return;
+        if (!this.enabled || !this.lobbyId || !this.isHost) return;
         if (!mobNetId) return; // Must have netId
         
         // Find the mob to get its position for death VFX
@@ -1616,13 +1679,17 @@ const multiplayer = {
     listenToFieldEvents() {
         if (!this.enabled || !this.lobbyId) return;
         
-        const eventsRef = database.ref(`lobbies/${this.lobbyId}/events`);
-        eventsRef.on('child_added', (snapshot) => {
+        const eventsRef = database.ref(`lobbies/${this.lobbyId}/events`).limitToLast(300);
+        const onEventAdded = (snapshot) => {
             const event = snapshot.val();
+            if (!event) return;
             if (event.playerId === this.playerId) return; // Ignore own events
+            if (event.timestamp && this.eventCutoffTime && event.timestamp < (this.eventCutoffTime - 1000)) return;
             
             this.handleFieldEvent(event);
-        });
+        };
+
+        this.setListener('events', eventsRef, { event: 'child_added', fn: onEventAdded });
     },
     
     // Handle incoming field events from other players
@@ -1695,77 +1762,8 @@ const multiplayer = {
                 }
                 break;
             case 'mob_spawn':
-                if (event.playerId !== this.playerId && event.mobData && typeof mob !== 'undefined') {
-                    // INSTANT mob spawn from host - create ghost mob immediately
-                    console.log('👹 Instant mob spawn from host:', event.mobType, event.mobData.netId);
-                    const mobData = event.mobData;
-                    
-                    // Check if we already have this mob
-                    const exists = mob.some(m => m && m.netId === mobData.netId);
-                    if (!exists) {
-                        // Create ghost mob immediately using the PROPER spawn function
-                        try {
-                            const beforeCount = mob.length;
-                            
-                            // Call the proper spawn function if mobType is provided
-                            if (event.mobType && typeof spawn !== 'undefined') {
-                                const params = event.spawnParams || {};
-                                
-                                // Special handling for shields and orbitals (need to find target mob)
-                                if (event.mobType === 'shield' && params.targetNetId) {
-                                    // Find the target mob by netId
-                                    const targetMob = mob.find(m => m && m.netId === params.targetNetId);
-                                    if (targetMob && typeof spawn.shield === 'function') {
-                                        spawn.shield(targetMob, mobData.x, mobData.y, 1); // Force spawn with chance=1
-                                        console.log(`✅ Created shield for mob ${params.targetNetId}`);
-                                    } else {
-                                        console.warn(`⚠️ Could not find target mob ${params.targetNetId} for shield`);
-                                    }
-                                } else if (event.mobType === 'orbital' && params.targetNetId) {
-                                    // Find the target mob by netId
-                                    const targetMob = mob.find(m => m && m.netId === params.targetNetId);
-                                    if (targetMob && typeof spawn.orbital === 'function') {
-                                        spawn.orbital(targetMob, params.radius, params.phase, params.speed);
-                                        console.log(`✅ Created orbital for mob ${params.targetNetId}`);
-                                    } else {
-                                        console.warn(`⚠️ Could not find target mob ${params.targetNetId} for orbital`);
-                                    }
-                                } else if (typeof spawn[event.mobType] === 'function') {
-                                    // Call the specific spawn function (e.g., spawn.hopper, spawn.shooter)
-                                    // Pass forceSpawn=true to bypass client guards in spawn functions
-                                    spawn[event.mobType](mobData.x, mobData.y, params.radius, true);
-                                    console.log(`✅ Created ${event.mobType} with full behaviors`);
-                                }
-                            } else {
-                                // Fallback to basic spawn
-                                const radius = mobData.radius || 30;
-                                const sides = Math.max(3, Math.min(8, Math.floor(mobData.sides) || 6));
-                                
-                                if (typeof mobs !== 'undefined' && typeof mobs.spawn === 'function') {
-                                    mobs.spawn(mobData.x, mobData.y, sides, radius, mobData.fill || '#735084');
-                                }
-                            }
-                            
-                            // Assign netId to the newly created mob
-                            if (mob.length > beforeCount) {
-                                const newMob = mob[mob.length - 1];
-                                if (newMob) {
-                                    newMob.netId = mobData.netId;
-                                    // CRITICAL: Register in tracking map to prevent duplicate ghost mob creation
-                                    const newIndex = mob.length - 1;
-                                    this.mobIndexByNetId.set(mobData.netId, newIndex);
-                                    // Sync position/velocity in case spawn function placed it differently
-                                    Matter.Body.setPosition(newMob, { x: mobData.x, y: mobData.y });
-                                    Matter.Body.setVelocity(newMob, { x: mobData.vx || 0, y: mobData.vy || 0 });
-                                    Matter.Body.setAngle(newMob, mobData.angle || 0);
-                                    console.log('✅ Created mob with netId:', mobData.netId, 'at index', newIndex);
-                                }
-                            }
-                        } catch (e) {
-                            console.error('❌ Failed to create instant ghost mob:', e);
-                        }
-                    }
-                }
+                // Mobs are hydrated from host physics snapshots only.
+                // This avoids duplicate spawns and spawn-signature mismatches on clients.
                 break;
             case 'player_died': {
                 // Show notification that a player died
@@ -2105,7 +2103,7 @@ const multiplayer = {
         // Don't give tech to other players - each player has their own tech
         // Just show notification that someone picked up tech
         if (typeof simulation !== 'undefined' && simulation.makeTextLog) {
-            const playerName = this.otherPlayers.get(event.playerId)?.name || 'Player';
+            const playerName = (this.players && this.players[event.playerId] && this.players[event.playerId].name) || 'Player';
             simulation.makeTextLog(`<span style='color:#0cf'>${playerName}</span> selected <span class='color-m'>${event.techName}</span>`);
         }
     },
@@ -2125,7 +2123,7 @@ const multiplayer = {
         
         // Follow the same transition path as local nextLevel, without rebroadcasting
         if (typeof level !== 'undefined' && typeof level.nextLevel === 'function') {
-            const playerName = this.otherPlayers?.get?.(event.playerId)?.name || 'Player';
+            const playerName = (this.players && this.players[event.playerId] && this.players[event.playerId].name) || 'Player';
             if (typeof simulation !== 'undefined' && simulation.makeTextLog) {
                 simulation.makeTextLog(`<span style='color:#0cf'>${playerName}</span> entered <span style='color:#ff0'>next level</span>`);
             }
@@ -2240,14 +2238,20 @@ const multiplayer = {
                 if (targetMob.alive) {
                     // Mark as dead first to prevent duplicate death calls
                     targetMob.alive = false;
-                    
-                    // Try to call the mob's death method if it exists
-                    if (typeof targetMob.death === 'function') {
+
+                    // Never execute full death logic on clients (drops/spawns are host-authoritative)
+                    if (!this.isHost) {
+                        try {
+                            Matter.World.remove(engine.world, targetMob);
+                        } catch (e) { /* ignore */ }
+                        if (targetIndex >= 0) {
+                            mob.splice(targetIndex, 1);
+                        }
+                    } else if (typeof targetMob.death === 'function') {
                         try {
                             targetMob.death();
                         } catch (e) {
                             console.warn('Error calling mob.death():', e);
-                            // Fallback: manually remove the mob
                             try {
                                 Matter.World.remove(engine.world, targetMob);
                             } catch (e2) { /* ignore */ }
@@ -2256,7 +2260,6 @@ const multiplayer = {
                             }
                         }
                     } else {
-                        // No death method, manually remove
                         try {
                             Matter.World.remove(engine.world, targetMob);
                         } catch (e) { /* ignore */ }
@@ -2496,12 +2499,13 @@ const multiplayer = {
                 
                 // If player is touching this mob (within mob radius + player radius)
                 if (dist2 < (radius + 40) * (radius + 40)) {
-                    const authKey = `mob_${i}`;
+                    const mobAuthorityId = mob[i].netId || i;
+                    const authKey = `mob_${mobAuthorityId}`;
                     const existing = this.clientAuthority.get(authKey);
                     
                     // Renew if not claimed, expired, or about to expire (within 100ms)
                     if (!existing || now > existing.expiry - 100) {
-                        this.claimAuthority('mob', i, 500); // 500ms authority for mobs - continuously renewed
+                        this.claimAuthority('mob', mobAuthorityId, 500); // 500ms authority for mobs - continuously renewed
                     }
                 }
             }
@@ -2513,7 +2517,7 @@ const multiplayer = {
         if (!this.enabled || !this.lobbyId) return;
         
         const authRef = database.ref(`lobbies/${this.lobbyId}/authority`);
-        authRef.on('value', (snapshot) => {
+        const onAuthorityValue = (snapshot) => {
             const authorities = snapshot.val();
             this.clientAuthority.clear();
             if (authorities) {
@@ -2521,7 +2525,8 @@ const multiplayer = {
                     this.clientAuthority.set(key, auth);
                 }
             }
-        });
+        };
+        this.setListener('authority', authRef, { event: 'value', fn: onAuthorityValue });
     },
     
     // Listen for game start
@@ -2529,12 +2534,13 @@ const multiplayer = {
         if (!this.lobbyId) return;
         
         const gameStartRef = database.ref(`lobbies/${this.lobbyId}/gameStarted`);
-        gameStartRef.on('value', (snapshot) => {
+        const onGameStartValue = (snapshot) => {
             if (snapshot.val() === true && !this.gameStarted) {
                 this.gameStarted = true;
                 if (callback) callback();
             }
-        });
+        };
+        this.setListener('gameStart', gameStartRef, { event: 'value', fn: onGameStartValue });
     },
     
     // ===== LEVEL TRANSITION CLEANUP =====
@@ -2639,23 +2645,30 @@ const multiplayer = {
         const powerupsRef = database.ref(`lobbies/${this.lobbyId}/powerups`);
         
         // Listen for new powerups
-        powerupsRef.on('child_added', (snapshot) => {
+        const onPowerupAdded = (snapshot) => {
             const powerupData = snapshot.val();
+            if (!powerupData) return;
             if (powerupData.spawnedBy === this.playerId) return; // Ignore own spawns
             
             this.handleRemotePowerupSpawn(powerupData);
-        });
+        };
         
         // Listen for powerup removals (pickups)
-        powerupsRef.on('child_removed', (snapshot) => {
+        const onPowerupRemoved = (snapshot) => {
             const powerupData = snapshot.val();
+            if (!powerupData) return;
             // Don't process removal if we don't have this powerup locally
             if (!this.networkPowerups.has(powerupData.id)) {
                 console.log('Ignoring powerup removal - not in local map:', powerupData.id);
                 return;
             }
             this.handleRemotePowerupPickup(powerupData);
-        });
+        };
+
+        this.setListener('powerups', powerupsRef, [
+            { event: 'child_added', fn: onPowerupAdded },
+            { event: 'child_removed', fn: onPowerupRemoved }
+        ]);
         
         console.log('Listening for powerup events');
     },
@@ -2881,31 +2894,24 @@ const multiplayer = {
             mobBullets: []
         };
         
-        // Sync mobs (enemies) - host syncs all mobs, clients sync those they're interacting with
-        if (typeof mob !== 'undefined' && mob.length) {
+        // Sync mobs (enemies) - host authoritative
+        if (this.isHost && typeof mob !== 'undefined' && mob.length) {
             for (let i = 0; i < mob.length; i++) {
                 const m = mob[i];
                 if (m && m.position && m.alive) { // Only sync alive mobs
-                    // For host: skip mobs under client authority
-                    // For clients: only sync mobs they have authority over
-                    const authKey = `mob_${i}`;
-                    if (this.isHost) {
-                        if (this.clientAuthority.has(authKey)) {
-                            const auth = this.clientAuthority.get(authKey);
-                            if (auth.playerId !== this.playerId && now < auth.expiry) {
-                                continue; // Skip this mob, client has authority
-                            }
-                        }
-                    } else {
-                        // Clients only sync mobs they're actively interacting with
-                        const auth = this.clientAuthority.get(authKey);
-                        if (!auth || auth.playerId !== this.playerId || now >= auth.expiry) {
-                            continue; // Skip, we don't have authority
-                        }
-                    }
-                    
                     // Assign persistent netId lazily on host
                     if (!m.netId) m.netId = `${this.playerId}_m${this.mobNetIdCounter++}`;
+
+                    // Skip mobs temporarily claimed by a client
+                    const authorityId = m.netId || i;
+                    const authKey = `mob_${authorityId}`;
+                    if (this.clientAuthority.has(authKey)) {
+                        const auth = this.clientAuthority.get(authKey);
+                        if (auth.playerId !== this.playerId && now < auth.expiry) {
+                            continue;
+                        }
+                    }
+
                     physicsData.mobs.push({
                         index: i,
                         netId: m.netId || null,
@@ -3062,8 +3068,8 @@ const multiplayer = {
             }
         }
         
-        // Sync mob bullets (projectiles from mobs) - sync ALL without culling
-        if (typeof mob !== 'undefined') {
+        // Sync mob bullets (projectiles from mobs) - host authoritative
+        if (this.isHost && typeof mob !== 'undefined') {
             for (let i = 0; i < mob.length; i++) {
                 const m = mob[i];
                 if (m && m.position && m.collisionFilter && m.collisionFilter.category === cat.mobBullet) {
@@ -3108,7 +3114,7 @@ const multiplayer = {
         if (!this.enabled || !this.lobbyId) return;
         
         const physicsRef = database.ref(`lobbies/${this.lobbyId}/physics`);
-        physicsRef.on('value', (snapshot) => {
+        const onPhysicsValue = (snapshot) => {
             const allPhysicsData = snapshot.val();
             if (!allPhysicsData) return;
             
@@ -3117,15 +3123,18 @@ const multiplayer = {
                 if (playerId === this.playerId) continue; // Skip own physics
                 this.applyPhysicsUpdate(physicsData, playerId);
             }
-        });
+        };
+        this.setListener('physics', physicsRef, { event: 'value', fn: onPhysicsValue });
         
         console.log('Listening for physics updates from all players');
     },
     
     // Apply physics update from other players
     applyPhysicsUpdate(physicsData, fromPlayerId) {
-        // Update mobs (from host OR from clients with authority)
-        if (physicsData.mobs && typeof mob !== 'undefined') {
+        const isFromHost = fromPlayerId === this.hostId;
+
+        // Update mobs from host authority only
+        if (isFromHost && physicsData.mobs && typeof mob !== 'undefined') {
             // Track which netIds were updated this cycle
             const updatedNetIds = new Set();
             
@@ -3519,7 +3528,7 @@ const multiplayer = {
         }
         
         // Update mob bullets (use interpolation)
-        if (physicsData.mobBullets && typeof mob !== 'undefined') {
+        if (isFromHost && physicsData.mobBullets && typeof mob !== 'undefined') {
             if (physicsData.mobBullets.length > 0 && Math.random() < 0.1) {
                 console.log(`🚀 CLIENT received ${physicsData.mobBullets.length} bullet updates, local mob array size: ${mob.length}`);
             }

@@ -1105,6 +1105,8 @@ const mobs = {
                 }
             },
             damage(dmg, isBypassShield = false) {
+                // Host-authoritative damage in multiplayer to prevent client-side desyncs.
+                if (typeof multiplayer !== 'undefined' && multiplayer.enabled && !multiplayer.isHost) return;
                 if ((!this.isShielded || isBypassShield) && this.alive) {
                     dmg *= tech.damageFromTech()
                     //mobs specific damage changes
@@ -1156,6 +1158,13 @@ const mobs = {
                         radius: this.radius || 30,
                         fill: this.fill || '#735084'
                     });
+                }
+
+                // Clients should never run drop/spawn reward logic for mobs.
+                if (typeof multiplayer !== 'undefined' && multiplayer.enabled && !multiplayer.isHost) {
+                    this.leaveBody = false;
+                    this.isDropPowerUp = false;
+                    return;
                 }
 
                 // Award polys in progressive mode
