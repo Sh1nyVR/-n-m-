@@ -69,5 +69,5 @@ npx http-server
 
 ## 🎮 Game Info
 
-Original game: n-gon by Tony Valsamis
+Original game: n-gon by Tony Valsamis!
 Repository: https://github.com/landgreen/n-gon
