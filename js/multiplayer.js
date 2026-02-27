@@ -17,6 +17,7 @@ let database;
 let auth;
 let authReadyPromise = null;
 let lastAuthError = null;
+const LOBBY_INDEX_PATH = 'lobbyIndex';
 
 function initFirebase() {
     if (typeof firebase === 'undefined') {
@@ -194,17 +195,18 @@ const multiplayer = {
         if (!database) return;
         const now = Date.now();
         const staleCutoff = now - maxAgeMs;
-        const snap = await database.ref('lobbies').orderByChild('createdAt').limitToLast(300).once('value').catch(() => null);
+        const snap = await database.ref(LOBBY_INDEX_PATH).orderByChild('createdAt').limitToLast(300).once('value').catch(() => null);
         if (!snap || !snap.exists()) return;
         const removals = [];
         snap.forEach((childSnapshot) => {
-            const lobby = childSnapshot.val() || {};
-            const playerCount = Object.keys(lobby.players || {}).length;
-            const createdAt = Number(lobby.createdAt) || 0;
+            const meta = childSnapshot.val() || {};
+            const playerCount = Number(meta.playerCount) || 0;
+            const createdAt = Number(meta.createdAt) || 0;
             const isStale = !createdAt || createdAt < staleCutoff;
             const isEmpty = playerCount === 0;
             if (isStale || isEmpty) {
                 removals.push(database.ref(`lobbies/${childSnapshot.key}`).remove().catch(() => {}));
+                removals.push(database.ref(`${LOBBY_INDEX_PATH}/${childSnapshot.key}`).remove().catch(() => {}));
             }
         });
         if (removals.length) await Promise.all(removals);
@@ -236,13 +238,14 @@ const multiplayer = {
         this.enabled = true;
         this.eventCutoffTime = Date.now();
         
+        const createdAt = Date.now();
         const lobbyData = {
             name: lobbyName || 'Unnamed Lobby',
             host: this.playerId,
             isPrivate: isPrivate,
             password: password || null,
             gameMode: gameMode,
-            createdAt: Date.now(),
+            createdAt: createdAt,
             gameStarted: false,
             hostOnlyLevelExit: false,
             friendlyFire: false,
@@ -259,6 +262,16 @@ const multiplayer = {
             }
             throw e;
         });
+        database.ref(`${LOBBY_INDEX_PATH}/${this.lobbyId}`).set({
+            name: lobbyData.name,
+            host: this.playerId,
+            isPrivate: !!isPrivate,
+            gameMode: gameMode,
+            createdAt: createdAt,
+            playerCount: 1
+        }).catch((e) => {
+            console.warn('Failed to write lobby index entry:', e);
+        });
         this.hostId = this.playerId; // host is self
         
         // Initialize local start state for host
@@ -269,6 +282,7 @@ const multiplayer = {
         playerRef.onDisconnect().remove();
         // Host disconnect should remove the entire lobby to prevent stale rooms.
         database.ref(`lobbies/${this.lobbyId}`).onDisconnect().remove();
+        database.ref(`${LOBBY_INDEX_PATH}/${this.lobbyId}`).onDisconnect().remove();
         // Remove stale physics path for this player on disconnect.
         database.ref(`lobbies/${this.lobbyId}/physics/${this.playerId}`).onDisconnect().remove();
         
@@ -313,26 +327,44 @@ const multiplayer = {
         if (this.lobbyId && this.lobbyId !== lobbyId) {
             try {
                 await database.ref(`lobbies/${this.lobbyId}/players/${this.playerId}`).remove();
+                this.adjustLobbyPlayerCount(this.lobbyId, -1);
             } catch (e) {
                 console.warn('Failed to remove player from previous lobby before join:', e);
             }
         }
         this.detachLobbyListeners();
         const lobbyRef = database.ref('lobbies/' + lobbyId);
-        const snapshot = await lobbyRef.once('value').catch((e) => {
-            console.error('Failed to read lobby path:', 'lobbies/' + lobbyId, e);
+        const fields = await Promise.all([
+            lobbyRef.child('host').once('value'),
+            lobbyRef.child('hostOnlyLevelExit').once('value'),
+            lobbyRef.child('friendlyFire').once('value'),
+            lobbyRef.child('isPrivate').once('value'),
+            lobbyRef.child('password').once('value'),
+            lobbyRef.child('gameMode').once('value'),
+            lobbyRef.child('gameStarted').once('value')
+        ]).catch((e) => {
+            console.error('Failed to read lobby metadata at path:', 'lobbies/' + lobbyId, e);
             throw e;
         });
-        
-        if (!snapshot.exists()) {
+        const [hostSnap, hostOnlyExitSnap, friendlyFireSnap, isPrivateSnap, passwordSnap, gameModeSnap, gameStartedSnap] = fields;
+
+        if (!hostSnap.exists()) {
             throw new Error('Lobby not found');
         }
-        
-        const lobbyData = snapshot.val();
+
+        const lobbyData = {
+            host: hostSnap.val(),
+            hostOnlyLevelExit: !!hostOnlyExitSnap.val(),
+            friendlyFire: !!friendlyFireSnap.val(),
+            isPrivate: !!isPrivateSnap.val(),
+            password: passwordSnap.val(),
+            gameMode: gameModeSnap.val(),
+            gameStarted: !!gameStartedSnap.val()
+        };
         this.hostId = lobbyData.host || null;
-        this.hostOnlyLevelExit = !!lobbyData.hostOnlyLevelExit;
-        this.friendlyFire = !!lobbyData.friendlyFire;
-        
+        this.hostOnlyLevelExit = lobbyData.hostOnlyLevelExit;
+        this.friendlyFire = lobbyData.friendlyFire;
+
         if (lobbyData.isPrivate && lobbyData.password !== password) {
             throw new Error('Invalid password');
         }
@@ -344,10 +376,14 @@ const multiplayer = {
         
         // Add self to lobby
         const playerRef = database.ref(`lobbies/${this.lobbyId}/players/${this.playerId}`);
+        const alreadyInLobbySnap = await playerRef.once('value').catch(() => null);
         await playerRef.set(this.getPlayerData()).catch((e) => {
             console.error('Failed to add player to lobby:', this.playerId, 'at', `lobbies/${this.lobbyId}/players/${this.playerId}`, e);
             throw e;
         });
+        if (!alreadyInLobbySnap || !alreadyInLobbySnap.exists()) {
+            this.adjustLobbyPlayerCount(this.lobbyId, 1);
+        }
         
         // Setup disconnect handler
         playerRef.onDisconnect().remove();
@@ -384,16 +420,16 @@ const multiplayer = {
         }
         const now = Date.now();
         const staleCutoff = now - (1000 * 60 * 60 * 12); // 12 hours
-        const lobbiesRef = database.ref('lobbies').orderByChild('createdAt').limitToLast(200);
+        const lobbiesRef = database.ref(LOBBY_INDEX_PATH).orderByChild('createdAt').limitToLast(200);
         const snapshot = await lobbiesRef.once('value');
-        
-        if (!snapshot.exists()) return [];
+
+        if (!snapshot.exists()) return this.getPublicLobbiesLegacy();
         
         const lobbies = [];
         const staleLobbyRemovals = [];
         snapshot.forEach((childSnapshot) => {
-            const lobby = childSnapshot.val();
-            const playerCount = Object.keys(lobby.players || {}).length;
+            const lobby = childSnapshot.val() || {};
+            const playerCount = Number(lobby.playerCount) || 0;
             const lobbyName = lobby.name || 'Unnamed Lobby';
             const createdAt = Number(lobby.createdAt) || 0;
             const isStale = !createdAt || createdAt < staleCutoff;
@@ -402,6 +438,7 @@ const multiplayer = {
             // Opportunistic cleanup for stale/empty lobbies
             if (isEmpty || isStale) {
                 staleLobbyRemovals.push(database.ref(`lobbies/${childSnapshot.key}`).remove().catch(() => {}));
+                staleLobbyRemovals.push(database.ref(`${LOBBY_INDEX_PATH}/${childSnapshot.key}`).remove().catch(() => {}));
                 return;
             }
 
@@ -423,6 +460,44 @@ const multiplayer = {
         
         return lobbies;
     },
+
+    async getPublicLobbiesLegacy() {
+        const now = Date.now();
+        const staleCutoff = now - (1000 * 60 * 60 * 12); // 12 hours
+        const lobbiesRef = database.ref('lobbies').orderByChild('createdAt').limitToLast(60);
+        const snapshot = await lobbiesRef.once('value');
+        if (!snapshot.exists()) return [];
+
+        const lobbies = [];
+        snapshot.forEach((childSnapshot) => {
+            const lobby = childSnapshot.val() || {};
+            const playerCount = Object.keys(lobby.players || {}).length;
+            const lobbyName = lobby.name || 'Unnamed Lobby';
+            const createdAt = Number(lobby.createdAt) || 0;
+            const isStale = !createdAt || createdAt < staleCutoff;
+            if (isStale || playerCount === 0) return;
+
+            if (!lobby.isPrivate && lobbyName !== 'Unnamed Lobby') {
+                lobbies.push({
+                    id: childSnapshot.key,
+                    name: lobbyName,
+                    playerCount: playerCount,
+                    gameMode: lobby.gameMode,
+                    createdAt: createdAt
+                });
+            }
+        });
+        return lobbies;
+    },
+
+    adjustLobbyPlayerCount(lobbyId, delta) {
+        if (!database || !lobbyId || !delta) return;
+        const countRef = database.ref(`${LOBBY_INDEX_PATH}/${lobbyId}/playerCount`);
+        countRef.transaction((current) => {
+            const value = Number(current) || 0;
+            return Math.max(0, value + delta);
+        }).catch(() => {});
+    },
     
     // Leave current lobby
     async leaveLobby() {
@@ -438,11 +513,14 @@ const multiplayer = {
         // Host leaving: remove lobby entirely to prevent orphaned stale rooms.
         if (wasHost) {
             await database.ref(`lobbies/${lobbyId}`).remove().catch(() => {});
+            await database.ref(`${LOBBY_INDEX_PATH}/${lobbyId}`).remove().catch(() => {});
         } else {
+            this.adjustLobbyPlayerCount(lobbyId, -1);
             // Non-host cleanup: if lobby became empty for any reason, remove it.
             const lobbySnap = await database.ref(`lobbies/${lobbyId}/players`).once('value').catch(() => null);
             if (lobbySnap && lobbySnap.exists() === false) {
                 await database.ref(`lobbies/${lobbyId}`).remove().catch(() => {});
+                await database.ref(`${LOBBY_INDEX_PATH}/${lobbyId}`).remove().catch(() => {});
             }
         }
         
@@ -2565,7 +2643,9 @@ const multiplayer = {
         if (!this.isHost || !this.lobbyId) return;
         
         const playerRef = database.ref(`lobbies/${this.lobbyId}/players/${playerId}`);
+        const existsSnap = await playerRef.once('value').catch(() => null);
         await playerRef.remove();
+        if (existsSnap && existsSnap.exists()) this.adjustLobbyPlayerCount(this.lobbyId, -1);
     },
     
     // Set host-only level exit (host only)
