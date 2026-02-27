@@ -111,6 +111,9 @@ const multiplayer = {
     },
     // Ignore stale lobby events created before we joined/created the lobby
     eventCutoffTime: 0,
+    // Guards to prevent remote replay from re-broadcasting back to Firebase
+    isApplyingRemoteBotSpawn: false,
+    suppressBotAutoSync: false,
 
     setListener(key, ref, handlers) {
         const prev = this.listeners[key];
@@ -1810,15 +1813,7 @@ const multiplayer = {
                 this.handleRemoteMobStatusEffect(event);
                 break;
             case 'bot_spawn':
-                if (event.playerId !== this.playerId && typeof b !== 'undefined') {
-                    // Handle remote bot spawn
-                    console.log('🤖 Remote bot spawn:', event.botType, 'from', event.playerId);
-                    // Call the appropriate bot spawn function
-                    if (event.botType === 'random' && typeof b.randomBot === 'function') {
-                        b.randomBot(event.position, event.params.isKeep, event.params.isAll);
-                    }
-                    // Add more bot types as needed
-                }
+                this.handleRemoteBotSpawn(event);
                 break;
             case 'mob_spawn':
                 // Mobs are hydrated from host physics snapshots only.
@@ -2016,8 +2011,66 @@ const multiplayer = {
         if (event.playerId === this.playerId) return; // Don't replay own lasers
         
         if (typeof b !== 'undefined' && b.laser && event.where && event.whereEnd) {
-            // Draw the laser effect on this client without applying damage (damage is host-authoritative)
-            b.laser(event.where, event.whereEnd, event.dmg || 0.16, event.reflections || 0, false, 1);
+            // Draw the laser effect on this client without re-broadcasting it.
+            this.isSpawningRemote = true;
+            try {
+                b.laser(event.where, event.whereEnd, event.dmg || 0.16, event.reflections || 0, false, 1);
+            } finally {
+                this.isSpawningRemote = false;
+            }
+        }
+    },
+
+    // Handle remote bot spawns for all bot types.
+    handleRemoteBotSpawn(event) {
+        if (!event || event.playerId === this.playerId || typeof b === 'undefined') return;
+        if (!event.position || !isFinite(event.position.x) || !isFinite(event.position.y)) return;
+        console.log('🤖 Remote bot spawn:', event.botType, 'from', event.playerId);
+
+        const pos = { x: event.position.x, y: event.position.y };
+        const p = event.params || {};
+
+        this.isApplyingRemoteBotSpawn = true;
+        this.suppressBotAutoSync = true;
+        this.isSpawningRemote = true;
+        this.spawningRemoteOwnerId = event.playerId;
+        try {
+            switch (event.botType) {
+                case 'random':
+                    if (typeof b.randomBot === 'function') b.randomBot(pos, !!p.isKeep, p.isAll !== false);
+                    break;
+                case 'dynamo':
+                    if (typeof b.dynamoBot === 'function') b.dynamoBot(pos, false);
+                    break;
+                case 'laser':
+                    if (typeof b.laserBot === 'function') b.laserBot(pos, false);
+                    break;
+                case 'nail':
+                    if (typeof b.nailBot === 'function') b.nailBot(pos, false);
+                    break;
+                case 'foam':
+                    if (typeof b.foamBot === 'function') b.foamBot(pos, false);
+                    break;
+                case 'boom':
+                    if (typeof b.boomBot === 'function') b.boomBot(pos, false);
+                    break;
+                case 'orbit':
+                    if (typeof b.orbitBot === 'function') b.orbitBot(pos, false);
+                    break;
+                case 'plasma':
+                    if (typeof b.plasmaBot === 'function') b.plasmaBot(pos, false);
+                    break;
+                case 'missile':
+                    if (typeof b.missileBot === 'function') b.missileBot(pos, false);
+                    break;
+                default:
+                    console.log('Unknown remote bot type:', event.botType);
+            }
+        } finally {
+            this.spawningRemoteOwnerId = null;
+            this.isSpawningRemote = false;
+            this.suppressBotAutoSync = false;
+            this.isApplyingRemoteBotSpawn = false;
         }
     },
     

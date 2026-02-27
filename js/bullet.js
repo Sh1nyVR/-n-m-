@@ -1588,8 +1588,8 @@ const b = {
             ctx.globalAlpha = 1;
         }
         
-        // Sync laser effect to multiplayer
-        if (typeof multiplayer !== 'undefined' && multiplayer.enabled) {
+        // Sync laser effect to multiplayer (but never rebroadcast remote replays)
+        if (typeof multiplayer !== 'undefined' && multiplayer.enabled && !multiplayer.isSpawningRemote) {
             multiplayer.syncLaser(where, whereEnd, dmg, reflections);
         }
     },
@@ -2527,6 +2527,7 @@ const b = {
         tech.foamBotCount = 0
         tech.boomBotCount = 0
         tech.orbitBotCount = 0
+        tech.plasmaBotCount = 0
         tech.missileBotCount = 0
     },
     respawnBots() {
@@ -2545,29 +2546,48 @@ const b = {
         }
     },
     randomBot(where = player.position, isKeep = true, isAll = true) {
-        // AUTO-SYNC: In multiplayer, sync bot spawns
-        if (typeof multiplayer !== 'undefined' && multiplayer.enabled) {
-            multiplayer.syncBotSpawn('random', where, { isKeep, isAll });
-        }
-        
+        // Choose concrete bot type locally, then sync that exact type so clients stay consistent.
+        let chosen = 'boom';
         if (Math.random() < 0.167 && isAll) {
-            b.dynamoBot(where)
-            if (isKeep) tech.dynamoBotCount++;
+            chosen = 'dynamo';
         } else if (Math.random() < 0.25 && isAll) {
-            b.laserBot(where)
-            if (isKeep) tech.laserBotCount++;
+            chosen = 'laser';
         } else if (Math.random() < 0.25 && isAll) {
-            b.orbitBot(where);
-            if (isKeep) tech.orbitBotCount++;
+            chosen = 'orbit';
         } else if (Math.random() < 0.33) {
-            b.nailBot(where)
-            if (isKeep) tech.nailBotCount++;
+            chosen = 'nail';
         } else if (Math.random() < 0.5) {
-            b.foamBot(where)
-            if (isKeep) tech.foamBotCount++;
-        } else {
-            b.boomBot(where)
-            if (isKeep) tech.boomBotCount++;
+            chosen = 'foam';
+        }
+
+        if (typeof multiplayer !== 'undefined' && multiplayer.enabled && !multiplayer.isApplyingRemoteBotSpawn && !multiplayer.suppressBotAutoSync) {
+            multiplayer.syncBotSpawn(chosen, where, { isKeep, isAll, fromRandom: true });
+        }
+
+        const hadSuppress = (typeof multiplayer !== 'undefined' && multiplayer.enabled) ? !!multiplayer.suppressBotAutoSync : false;
+        if (typeof multiplayer !== 'undefined' && multiplayer.enabled) multiplayer.suppressBotAutoSync = true;
+        try {
+            if (chosen === 'dynamo') {
+                b.dynamoBot(where);
+                if (isKeep) tech.dynamoBotCount++;
+            } else if (chosen === 'laser') {
+                b.laserBot(where);
+                if (isKeep) tech.laserBotCount++;
+            } else if (chosen === 'orbit') {
+                b.orbitBot(where);
+                if (isKeep) tech.orbitBotCount++;
+            } else if (chosen === 'nail') {
+                b.nailBot(where);
+                if (isKeep) tech.nailBotCount++;
+            } else if (chosen === 'foam') {
+                b.foamBot(where);
+                if (isKeep) tech.foamBotCount++;
+            } else {
+                b.boomBot(where);
+                if (isKeep) tech.boomBotCount++;
+            }
+        } finally {
+            if (typeof multiplayer !== 'undefined' && multiplayer.enabled) multiplayer.suppressBotAutoSync = hadSuppress;
         }
     },
     setDynamoBotDelay() {
@@ -2587,6 +2607,9 @@ const b = {
     },
     dynamoBot(position = player.position, isConsole = true) {
         if (isConsole) simulation.makeTextLog(`<span class='color-var'>b</span>.dynamoBot()`);
+        if (typeof multiplayer !== 'undefined' && multiplayer.enabled && !multiplayer.isApplyingRemoteBotSpawn && !multiplayer.suppressBotAutoSync) {
+            multiplayer.syncBotSpawn('dynamo', position, {});
+        }
         const me = bullet.length;
         bullet[me] = Bodies.polygon(position.x, position.y, 5, 10, {
             isUpgraded: tech.isDynamoBotUpgrade,
@@ -2687,6 +2710,9 @@ const b = {
     },
     nailBot(position = { x: player.position.x + 50 * (Math.random() - 0.5), y: player.position.y + 50 * (Math.random() - 0.5) }, isConsole = true) {
         if (isConsole) simulation.makeTextLog(`<span class='color-var'>b</span>.nailBot()`);
+        if (typeof multiplayer !== 'undefined' && multiplayer.enabled && !multiplayer.isApplyingRemoteBotSpawn && !multiplayer.suppressBotAutoSync) {
+            multiplayer.syncBotSpawn('nail', position, {});
+        }
         const me = bullet.length;
         const dir = m.angle;
         const RADIUS = (12 + 4 * Math.random())
@@ -2741,9 +2767,12 @@ const b = {
     },
     missileBot(position = { x: player.position.x + 50 * (Math.random() - 0.5), y: player.position.y + 50 * (Math.random() - 0.5) }, isConsole = true) {
         if (isConsole) simulation.makeTextLog(`<span class='color-var'>b</span>.missileBot()`);
+        if (typeof multiplayer !== 'undefined' && multiplayer.enabled && !multiplayer.isApplyingRemoteBotSpawn && !multiplayer.suppressBotAutoSync) {
+            multiplayer.syncBotSpawn('missile', position, {});
+        }
         const me = bullet.length;
         bullet[me] = Bodies.rectangle(position.x, position.y, 28, 11, {
-            botType: "foam",
+            botType: "missile",
             angle: m.angle,
             friction: 0,
             frictionStatic: 0,
@@ -2792,6 +2821,9 @@ const b = {
     },
     foamBot(position = { x: player.position.x + 50 * (Math.random() - 0.5), y: player.position.y + 50 * (Math.random() - 0.5) }, isConsole = true) {
         if (isConsole) simulation.makeTextLog(`<span class='color-var'>b</span>.foamBot()`);
+        if (typeof multiplayer !== 'undefined' && multiplayer.enabled && !multiplayer.isApplyingRemoteBotSpawn && !multiplayer.suppressBotAutoSync) {
+            multiplayer.syncBotSpawn('foam', position, {});
+        }
         const me = bullet.length;
         const dir = m.angle;
         const RADIUS = (10 + 5 * Math.random())
@@ -2847,6 +2879,9 @@ const b = {
     },
     laserBot(position = { x: player.position.x + 50 * (Math.random() - 0.5), y: player.position.y + 50 * (Math.random() - 0.5) }, isConsole = true) {
         if (isConsole) simulation.makeTextLog(`<span class='color-var'>b</span>.laserBot()`);
+        if (typeof multiplayer !== 'undefined' && multiplayer.enabled && !multiplayer.isApplyingRemoteBotSpawn && !multiplayer.suppressBotAutoSync) {
+            multiplayer.syncBotSpawn('laser', position, {});
+        }
         const me = bullet.length;
         const dir = m.angle;
         const RADIUS = (14 + 6 * Math.random())
@@ -2935,6 +2970,9 @@ const b = {
     },
     boomBot(position = { x: player.position.x + 50 * (Math.random() - 0.5), y: player.position.y + 50 * (Math.random() - 0.5) }, isConsole = true) {
         if (isConsole) simulation.makeTextLog(`<span class='color-var'>b</span>.boomBot()`);
+        if (typeof multiplayer !== 'undefined' && multiplayer.enabled && !multiplayer.isApplyingRemoteBotSpawn && !multiplayer.suppressBotAutoSync) {
+            multiplayer.syncBotSpawn('boom', position, {});
+        }
         const me = bullet.length;
         const dir = m.angle;
         const RADIUS = (7 + 2 * Math.random())
@@ -3020,6 +3058,9 @@ const b = {
     },
     plasmaBot(position = { x: player.position.x + 50 * (Math.random() - 0.5), y: player.position.y + 50 * (Math.random() - 0.5) }, isConsole = true) {
         if (isConsole) simulation.makeTextLog(`<span class='color-var'>b</span>.plasmaBot()`);
+        if (typeof multiplayer !== 'undefined' && multiplayer.enabled && !multiplayer.isApplyingRemoteBotSpawn && !multiplayer.suppressBotAutoSync) {
+            multiplayer.syncBotSpawn('plasma', position, {});
+        }
         const me = bullet.length;
         const dir = m.angle;
         const RADIUS = 21
@@ -3206,6 +3247,9 @@ const b = {
     },
     orbitBot(position = player.position, isConsole = true) {
         if (isConsole) simulation.makeTextLog(`<span class='color-var'>b</span>.orbitBot()`);
+        if (typeof multiplayer !== 'undefined' && multiplayer.enabled && !multiplayer.isApplyingRemoteBotSpawn && !multiplayer.suppressBotAutoSync) {
+            multiplayer.syncBotSpawn('orbit', position, {});
+        }
         const me = bullet.length;
         bullet[me] = Bodies.polygon(position.x, position.y, 9, 12, {
             isUpgraded: tech.isOrbitBotUpgrade,
