@@ -1458,6 +1458,15 @@ summary {
     font-family: "Helvetica", "Arial", sans-serif !important;
 }
 
+.mp-toggle-row,
+.mp-empty {
+    color: #111 !important;
+}
+
+.mp-divider {
+    background: #bbb !important;
+}
+
 .mp-input,
 .mp-select,
 .mp-color-input {
@@ -1512,4 +1521,14 @@ summary {
 
 .mp-btn-danger {
     background: #f44 !important;
+}
+
+.mp-mini-btn {
+    background: #f44 !important;
+    color: #fff !important;
+}
+
+.mp-mode-button:hover .mp-rainbow-bg {
+    fill: url(#mp-rainbow-grad);
+    filter: brightness(1.08) saturate(1.12);
 }

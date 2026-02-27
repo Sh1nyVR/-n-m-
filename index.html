@@ -450,6 +450,17 @@
         
         <!-- Mode Selection UI -->
         <g id="mode-selection" style="display: none;">
+            <defs>
+                <linearGradient id="mp-rainbow-grad" x1="0%" y1="0%" x2="100%" y2="0%">
+                    <stop offset="0%" stop-color="#ff4d4d" />
+                    <stop offset="20%" stop-color="#ff9f1c" />
+                    <stop offset="40%" stop-color="#ffe066" />
+                    <stop offset="60%" stop-color="#2ec4b6" />
+                    <stop offset="80%" stop-color="#3a86ff" />
+                    <stop offset="100%" stop-color="#8338ec" />
+                    <animateTransform attributeName="gradientTransform" type="rotate" from="0 0.5 0.5" to="360 0.5 0.5" dur="8s" repeatCount="indefinite" />
+                </linearGradient>
+            </defs>
             <rect x="0" y="0" width="800" height="800" fill="#fff"/>
             <text x="400" y="150" text-anchor="middle" fill="#333" font-size="36px" font-family="Arial Black, sans-serif">SELECT MODE</text>
             
@@ -466,14 +477,13 @@
                 <text x="400" y="405" text-anchor="middle" fill="#333" font-size="32px" font-family="Arial Black, sans-serif" style="pointer-events: none;">ADVENTURE</text>
                 <text x="400" y="428" text-anchor="middle" fill="#666" font-size="16px" font-family="Arial, sans-serif" style="pointer-events: none;">Classic mode, random powerups</text>
             </g>
-            
             <!-- Multiplayer Mode -->
-            <g onclick="if(typeof multiplayerUI !== 'undefined'){ multiplayerUI.showMenu(); } else { alert('Multiplayer not loaded') }" style="cursor: pointer;" class="menu-button">
-                <rect x="250" y="470" width="300" height="80" fill="#f80" stroke="#333" stroke-width="3"/>
-                <text x="400" y="515" text-anchor="middle" fill="#fff" font-size="32px" font-family="Arial Black, sans-serif" style="pointer-events: none;">🌐 MULTIPLAYER</text>
-                <text x="400" y="538" text-anchor="middle" fill="#fff" font-size="16px" font-family="Arial, sans-serif" style="pointer-events: none;">Play with friends online</text>
-            </g>
-            
+            <g onclick="if(typeof multiplayerUI !== 'undefined'){ multiplayerUI.showMenu(); } else { alert('Multiplayer not loaded') }" style="cursor: pointer;" class="menu-button mp-mode-button">
+                <rect class="mp-rainbow-bg" x="250" y="470" width="300" height="80" fill="url(#mp-rainbow-grad)" stroke="#333" stroke-width="3"/>
+                <text x="545" y="467" text-anchor="end" fill="#fff" stroke="#111" stroke-width="0.8" font-size="14px" font-family="Arial Black, sans-serif" transform="rotate(-18 545 467)" style="pointer-events: none;">(BETA)</text>
+                <text x="400" y="511" text-anchor="middle" fill="#111" font-size="28px" font-family="Arial Black, sans-serif" textLength="248" lengthAdjust="spacingAndGlyphs" style="pointer-events: none;">MULTIPLAYER</text>
+                <text x="400" y="535" text-anchor="middle" fill="#111" font-size="16px" font-family="Arial, sans-serif" style="pointer-events: none;">Play with friends online</text>
+            </g>            
             <!-- Back Button -->
             <g onclick="document.getElementById('mode-selection').style.display='none'; document.getElementById('main-menu-buttons').style.display='block';" style="cursor: pointer;" class="menu-button">
                 <rect x="325" y="580" width="150" height="45" fill="#fff" stroke="#333" stroke-width="2"/>
@@ -640,3 +650,4 @@
 
 
 </body></html>
+
