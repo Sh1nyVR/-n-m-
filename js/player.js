@@ -1241,8 +1241,8 @@ const m = {
                         mass: m.holdingTarget.mass,
                         charge: charge
                     });
-                    // Release authority after throw using body.id
-                    multiplayer.releaseAuthority('block', m.holdingTarget.id);
+                    // Release authority after throw using shared body[] index
+                    if (idx !== -1) multiplayer.releaseAuthority('block', idx);
                 }
                 
                 Matter.Body.setVelocity(m.holdingTarget, throwVelocity);
@@ -1384,11 +1384,11 @@ const m = {
                 if (blockIndex !== -1 && who.id) {
                     console.log('Syncing block push:', blockIndex, 'bodyId:', who.id);
                     multiplayer.syncFieldInteraction('block_push', { blockIndex: blockIndex, bodyId: who.id });
-                    // Claim short-lived authority so client can sync this block's movement using body.id
+                    // Claim short-lived authority using shared body[] index
                     if (typeof multiplayer.claimAuthority === 'function') {
-                        multiplayer.claimAuthority('block', who.id);
+                        multiplayer.claimAuthority('block', blockIndex);
                         setTimeout(() => {
-                            if (typeof multiplayer.releaseAuthority === 'function') multiplayer.releaseAuthority('block', who.id);
+                            if (typeof multiplayer.releaseAuthority === 'function') multiplayer.releaseAuthority('block', blockIndex);
                         }, 700);
                     }
                 }
@@ -1547,8 +1547,8 @@ const m = {
         // Sync block pickup to multiplayer
         if (typeof multiplayer !== 'undefined' && multiplayer.enabled) {
             const idx = (typeof body !== 'undefined') ? body.indexOf(m.holdingTarget) : -1;
-            // Claim authority over this block using body.id (not array index) with 5 second duration
-            multiplayer.claimAuthority('block', m.holdingTarget.id, 5000);
+            // Claim authority over this block using shared body[] index with 5 second duration
+            if (idx !== -1) multiplayer.claimAuthority('block', idx, 5000);
             multiplayer.syncBlockInteraction('pickup', {
                 index: idx,
                 bodyId: m.holdingTarget.id,

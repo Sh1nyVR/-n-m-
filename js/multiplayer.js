@@ -2588,12 +2588,12 @@ const multiplayer = {
             
             // If player is touching this block (within 80 units)
             if (dist2 < 6400) {
-                const authKey = `block_${body[i].id}`; // Use body.id instead of array index
+                const authKey = `block_${i}`;
                 const existing = this.clientAuthority.get(authKey);
                 
                 // Renew if not claimed, expired, or about to expire (within 200ms)
                 if (!existing || now > existing.expiry - 200) {
-                    this.claimAuthority('block', body[i].id, 1000); // 1 second authority - continuously renewed
+                    this.claimAuthority('block', i, 1000); // 1 second authority - continuously renewed
                 }
             }
         }
@@ -3118,6 +3118,7 @@ const multiplayer = {
                         const restitution = isFinite(body[i].restitution) ? body[i].restitution : 0;
                         
                         physicsData.blocks.push({
+                            index: i,
                             bodyId: body[i].id, // Use Matter.js body ID instead of array index
                             x: this.sanitizeValue(body[i].position.x),
                             y: this.sanitizeValue(body[i].position.y),
@@ -3141,7 +3142,7 @@ const multiplayer = {
                 for (let i = 0; i < body.length && count < maxBlocks; i++) {
                     if (!body[i] || !body[i].position || !body[i].id) continue;
                     const bodyId = body[i].id;
-                    const authKey = `block_${bodyId}`;
+                    const authKey = `block_${i}`;
                     
                     if (this.isHost) {
                         // Host syncs moving blocks OR blocks under client authority
@@ -3152,6 +3153,7 @@ const multiplayer = {
                         
                         if (isMoving || hasClientAuthority) {
                             physicsData.blocks.push({
+                                index: i,
                                 bodyId: bodyId,
                                 x: this.sanitizeValue(body[i].position.x),
                                 y: this.sanitizeValue(body[i].position.y),
@@ -3170,6 +3172,7 @@ const multiplayer = {
                                 console.log(`📤 CLIENT syncing block ${bodyId} with authority at (${body[i].position.x.toFixed(0)}, ${body[i].position.y.toFixed(0)})`);
                             }
                             physicsData.blocks.push({
+                                index: i,
                                 bodyId: bodyId,
                                 x: this.sanitizeValue(body[i].position.x),
                                 y: this.sanitizeValue(body[i].position.y),
@@ -3186,11 +3189,13 @@ const multiplayer = {
             // Always include currently held block if any (prioritize for visibility)
             if (typeof m !== 'undefined' && m.holdingTarget && m.holdingTarget.id) {
                 const heldBodyId = m.holdingTarget.id;
-                if (!physicsData.blocks.some(b => b.bodyId === heldBodyId)) {
+                const heldIndex = (typeof body !== 'undefined') ? body.indexOf(m.holdingTarget) : -1;
+                if (!physicsData.blocks.some(b => (isFinite(heldIndex) && b.index === heldIndex) || b.bodyId === heldBodyId)) {
                     if (Math.random() < 0.05) {
                         console.log(`📦 Syncing held block ID ${heldBodyId} at (${m.holdingTarget.position.x.toFixed(0)}, ${m.holdingTarget.position.y.toFixed(0)})`);
                     }
                     physicsData.blocks.unshift({
+                        index: heldIndex,
                         bodyId: heldBodyId,
                         x: this.sanitizeValue(m.holdingTarget.position.x),
                         y: this.sanitizeValue(m.holdingTarget.position.y),
@@ -3369,7 +3374,10 @@ const multiplayer = {
                         // Only apply vertices if mob doesn't have ongoing client-side vertex changes
                         // OR if this is a full resync (every ~30 updates to correct drift)
                         const forceSync = (this.mobVertexSyncCounter++ % 30 === 0);
-                        if (forceSync || !mob[targetIndex].isVerticesChange) {
+                        const radiusDrift = isFinite(mobData.radius) && isFinite(mob[targetIndex].radius) &&
+                            Math.abs((mob[targetIndex].radius || 0) - mobData.radius) > 1;
+                        const mustSyncShape = !!mob[targetIndex].isGhost || radiusDrift;
+                        if (forceSync || mustSyncShape || !mob[targetIndex].isVerticesChange) {
                             try { 
                                 Matter.Body.setVertices(bodyRef, mobData.verts);
                                 if (Math.random() < 0.05) {
@@ -3617,19 +3625,26 @@ const multiplayer = {
                 console.log(`📥 Applying ${physicsData.blocks.length} block updates from player ${fromPlayerId}`);
             }
             for (const blockData of physicsData.blocks) {
-                // Find body by position matching instead of ID (IDs differ across clients)
-                // Match by closest position within a reasonable threshold
+                // Resolve block by shared body[] index first.
+                // Fallback to nearest-position only when index is missing/invalid.
                 let targetBody = null;
+                let resolvedIndex = isFinite(blockData.index) ? blockData.index : -1;
+                if (resolvedIndex >= 0 && resolvedIndex < body.length && body[resolvedIndex]) {
+                    targetBody = body[resolvedIndex];
+                }
                 let minDist2 = 40000; // 200 unit threshold squared (blocks can move far when picked up)
-                
-                for (let i = 0; i < body.length; i++) {
-                    if (!body[i] || !body[i].position) continue;
-                    const dx = body[i].position.x - blockData.x;
-                    const dy = body[i].position.y - blockData.y;
-                    const dist2 = dx * dx + dy * dy;
-                    if (dist2 < minDist2) {
-                        minDist2 = dist2;
-                        targetBody = body[i];
+
+                if (!targetBody) {
+                    for (let i = 0; i < body.length; i++) {
+                        if (!body[i] || !body[i].position) continue;
+                        const dx = body[i].position.x - blockData.x;
+                        const dy = body[i].position.y - blockData.y;
+                        const dist2 = dx * dx + dy * dy;
+                        if (dist2 < minDist2) {
+                            minDist2 = dist2;
+                            targetBody = body[i];
+                            resolvedIndex = i;
+                        }
                     }
                 }
                 
@@ -3640,7 +3655,8 @@ const multiplayer = {
                 if (targetBody) {
                     // If update is from host, always accept (host has final authority)
                     // If from client, accept if we're NOT touching it (or if we're the host accepting client authority)
-                    const authKey = `block_${blockData.bodyId}`;
+                    const authId = isFinite(blockData.index) ? blockData.index : blockData.bodyId;
+                    const authKey = `block_${authId}`;
                     const isFromHost = (fromPlayerId === this.hostId) || (this.players[fromPlayerId] && this.players[fromPlayerId].isHost);
                     
                     // Skip only if: update is from ANOTHER client AND we have our own authority
@@ -3648,7 +3664,7 @@ const multiplayer = {
                     if (!isFromHost && !this.isHost && this.clientAuthority.has(authKey) && 
                         this.clientAuthority.get(authKey).playerId === this.playerId) {
                         if (Math.random() < 0.01) {
-                            console.log(`⏭️ Skipping block ${blockData.bodyId} - under my authority (from client)`);
+                            console.log(`⏭️ Skipping block ${authId} - under my authority (from client)`);
                         }
                         continue;
                     }
@@ -3673,7 +3689,7 @@ const multiplayer = {
                     const newY = currentPos.y + dy * lerpFactor;
                     
                     if (Math.random() < 0.01) {
-                        console.log(`✅ Applying block ${blockData.bodyId} update: (${currentPos.x.toFixed(0)},${currentPos.y.toFixed(0)}) -> (${newX.toFixed(0)},${newY.toFixed(0)}) [dist: ${Math.sqrt(dist2).toFixed(0)}]`);
+                        console.log(`✅ Applying block ${authId} update: (${currentPos.x.toFixed(0)},${currentPos.y.toFixed(0)}) -> (${newX.toFixed(0)},${newY.toFixed(0)}) [dist: ${Math.sqrt(dist2).toFixed(0)}]`);
                     }
                     
                     Matter.Body.setPosition(targetBody, { x: newX, y: newY });
