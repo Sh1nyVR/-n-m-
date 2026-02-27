@@ -10,6 +10,17 @@ function seededRandom() {
     return levelSeed / 233280;
 }
 
+function shouldApplySpawnMobPlayerDamage(attacker = null, targetPos = null) {
+    if (typeof multiplayer !== 'undefined' && multiplayer.enabled && typeof multiplayer.shouldApplyMobPlayerDamage === 'function') {
+        return multiplayer.shouldApplyMobPlayerDamage(attacker, targetPos);
+    }
+    return true;
+}
+
+function shouldRenderSpawnMobIndicators() {
+    return !(typeof multiplayer !== 'undefined' && multiplayer.enabled && !multiplayer.isHost);
+}
+
 const spawn = {
     pickList: ["starter", "starter"],
     fullPickList: [
@@ -222,7 +233,7 @@ const spawn = {
                     m.energy -= DRAIN
                 } else {
                     m.energy = 0;
-                    m.damage(0.007 * simulation.dmgScale)
+                    if (shouldApplySpawnMobPlayerDamage(this)) m.damage(0.007 * simulation.dmgScale)
                     simulation.drawList.push({ //add dmg to draw queue
                         x: this.position.x,
                         y: this.position.y,
@@ -533,7 +544,7 @@ const spawn = {
             if (Vector.magnitude(Vector.sub(this.position, player.position)) < eventHorizon) {
                 if (m.energy > 0) m.energy -= 0.01
                 if (m.energy < 0.15 && m.immuneCycle < m.cycle) {
-                    m.damage(0.0004 * simulation.dmgScale);
+                    if (shouldApplySpawnMobPlayerDamage(this)) m.damage(0.0004 * simulation.dmgScale);
                 }
                 const angle = Math.atan2(player.position.y - this.position.y, player.position.x - this.position.x);
                 player.force.x -= 0.0017 * Math.cos(angle) * player.mass * (m.onGround ? 1.7 : 1);
@@ -662,7 +673,7 @@ const spawn = {
                 if (!m.isCloak) vertexCollision(where, look, [player]);
                 if (best.who && best.who === player && m.immuneCycle < m.cycle) {
                     if (m.immuneCycle < m.cycle + 60 + tech.collisionImmuneCycles) m.immuneCycle = m.cycle + 60 + tech.collisionImmuneCycles; //player is immune to damage extra time
-                    m.damage(dmg);
+                    if (shouldApplySpawnMobPlayerDamage(this)) m.damage(dmg);
                     simulation.drawList.push({ //add dmg to draw queue
                         x: best.x,
                         y: best.y,
@@ -1266,7 +1277,7 @@ const spawn = {
                 if (Vector.magnitude(Vector.sub(this.position, player.position)) < eventHorizon) {
                     if (m.energy > 0) m.energy -= 0.004
                     if (m.energy < 0.1 && m.immuneCycle < m.cycle) {
-                        m.damage(0.00015 * simulation.dmgScale);
+                        if (shouldApplySpawnMobPlayerDamage(this)) m.damage(0.00015 * simulation.dmgScale);
                     }
                     const angle = Math.atan2(player.position.y - this.position.y, player.position.x - this.position.x);
                     player.force.x -= 0.00125 * player.mass * Math.cos(angle) * (m.onGround ? 1.8 : 1);
@@ -1377,7 +1388,7 @@ const spawn = {
                 if (Vector.magnitude(Vector.sub(this.position, player.position)) < eventHorizon) {
                     if (m.energy > 0) m.energy -= 0.006
                     if (m.energy < 0.1 && m.immuneCycle < m.cycle) {
-                        m.damage(0.0002 * simulation.dmgScale);
+                        if (shouldApplySpawnMobPlayerDamage(this)) m.damage(0.0002 * simulation.dmgScale);
                     }
                     const angle = Math.atan2(player.position.y - this.position.y, player.position.x - this.position.x);
                     player.force.x -= 0.0013 * Math.cos(angle) * player.mass * (m.onGround ? 1.7 : 1);
@@ -1644,7 +1655,7 @@ const spawn = {
             // ctx.lineDashOffset = 6*(simulation.cycle % 215);
             if (this.distanceToPlayer() < this.laserRange) {
                 if (m.energy > 0.002) m.energy -= 0.002
-                if (m.immuneCycle < m.cycle) m.damage(0.0001 * simulation.dmgScale);
+                if (m.immuneCycle < m.cycle && shouldApplySpawnMobPlayerDamage(this)) m.damage(0.0001 * simulation.dmgScale);
                 ctx.beginPath();
                 ctx.moveTo(eye.x, eye.y);
                 ctx.lineTo(m.pos.x, m.pos.y);
@@ -1652,19 +1663,25 @@ const spawn = {
                 ctx.lineWidth = 2;
                 ctx.strokeStyle = "rgb(150,0,255)";
                 ctx.stroke();
+                if (shouldRenderSpawnMobIndicators()) {
+                    ctx.beginPath();
+                    ctx.arc(m.pos.x, m.pos.y, 40, 0, 2 * Math.PI);
+                    ctx.fillStyle = "rgba(150,0,255,0.15)";
+                    ctx.fill();
+                }
+            }
+            if (shouldRenderSpawnMobIndicators()) {
                 ctx.beginPath();
-                ctx.arc(m.pos.x, m.pos.y, 40, 0, 2 * Math.PI);
-                ctx.fillStyle = "rgba(150,0,255,0.15)";
+                ctx.arc(this.position.x, this.position.y, this.laserRange * 0.9, 0, 2 * Math.PI);
+                ctx.strokeStyle = "rgba(150,0,255,0.5)";
+                ctx.lineWidth = 1;
+                ctx.stroke();
+            }
+            ctx.setLineDash([]);
+            if (shouldRenderSpawnMobIndicators()) {
+                ctx.fillStyle = "rgba(150,0,255,0.03)";
                 ctx.fill();
             }
-            ctx.beginPath();
-            ctx.arc(this.position.x, this.position.y, this.laserRange * 0.9, 0, 2 * Math.PI);
-            ctx.strokeStyle = "rgba(150,0,255,0.5)";
-            ctx.lineWidth = 1;
-            ctx.stroke();
-            ctx.setLineDash([]);
-            ctx.fillStyle = "rgba(150,0,255,0.03)";
-            ctx.fill();
             if (!m.isBodiesAsleep && !this.isStunned && !this.isSlowed) {
                 if (this.followDelay > this.delayLimit) this.followDelay -= 0.2;
                 let history = m.history[(m.cycle - Math.floor(this.followDelay)) % 600]
@@ -1876,7 +1893,7 @@ const spawn = {
                 if (best.who === player) {
                     if (m.immuneCycle < m.cycle) {
                         const dmg = 0.002 * simulation.dmgScale;
-                        m.damage(dmg);
+                        if (shouldApplySpawnMobPlayerDamage(this)) m.damage(dmg);
                         //draw damage
                         ctx.fillStyle = color;
                         ctx.beginPath();
@@ -1958,7 +1975,7 @@ const spawn = {
                             //damage player if in range
                             if (Vector.magnitude(Vector.sub(player.position, this.fireTarget)) < this.pulseRadius && m.immuneCycle < m.cycle) {
                                 m.immuneCycle = m.cycle + tech.collisionImmuneCycles; //player is immune to damage
-                                m.damage(0.045 * simulation.dmgScale);
+                                if (shouldApplySpawnMobPlayerDamage(this, this.fireTarget)) m.damage(0.045 * simulation.dmgScale);
                             }
                             // Host sync: pulsarBoss commit
                             if (typeof multiplayer !== 'undefined' && multiplayer.enabled && multiplayer.isHost) {
@@ -2121,7 +2138,7 @@ const spawn = {
                             //damage player if in range
                             if (Vector.magnitude(Vector.sub(player.position, this.fireTarget)) < this.pulseRadius && m.immuneCycle < m.cycle) {
                                 m.immuneCycle = m.cycle + tech.collisionImmuneCycles; //player is immune to damage
-                                m.damage(0.03 * simulation.dmgScale);
+                                if (shouldApplySpawnMobPlayerDamage(this, this.fireTarget)) m.damage(0.03 * simulation.dmgScale);
                             }
                             // Host sync: pulsar commit
                             if (typeof multiplayer !== 'undefined' && multiplayer.enabled && multiplayer.isHost) {
@@ -2372,7 +2389,7 @@ const spawn = {
             if (best.who && best.who === player && m.immuneCycle < m.cycle) {
                 m.immuneCycle = m.cycle + tech.collisionImmuneCycles + 60; //player is immune to damage for an extra second
                 const dmg = 0.14 * simulation.dmgScale;
-                m.damage(dmg);
+                if (shouldApplySpawnMobPlayerDamage(this)) m.damage(dmg);
                 simulation.drawList.push({ //add dmg to draw queue
                     x: best.x,
                     y: best.y,
@@ -2742,7 +2759,7 @@ const spawn = {
             if (Matter.Query.collides(this, [player]).length > 0 && !(m.isCloak && tech.isIntangible) && m.immuneCycle < m.cycle) {
                 m.immuneCycle = m.cycle + tech.collisionImmuneCycles;
                 const dmg = 0.06 * simulation.dmgScale;
-                m.damage(dmg);
+                if (shouldApplySpawnMobPlayerDamage(this)) m.damage(dmg);
                 simulation.drawList.push({
                     x: this.position.x,
                     y: this.position.y,
@@ -3624,7 +3641,7 @@ const spawn = {
             if (Matter.Query.collides(this, [player]).length > 0 && !(m.isCloak && tech.isIntangible) && m.immuneCycle < m.cycle) {
                 m.immuneCycle = m.cycle + tech.collisionImmuneCycles; //player is immune to damage for 30 cycles
                 const dmg = 0.035 * simulation.dmgScale
-                m.damage(dmg);
+                if (shouldApplySpawnMobPlayerDamage(this)) m.damage(dmg);
                 simulation.drawList.push({ //add dmg to draw queue
                     x: this.position.x,
                     y: this.position.y,

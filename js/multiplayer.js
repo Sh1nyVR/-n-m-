@@ -2844,6 +2844,51 @@ const multiplayer = {
         if (sourceOwnerId === targetPlayerId) return true; // Same player, allow self-damage
         return false; // Different player and friendly fire disabled, block damage
     },
+
+    // On non-host clients, only apply mob->player damage when this client is the intended target.
+    shouldApplyMobPlayerDamage(attacker = null, explicitTargetPos = null) {
+        if (!this.enabled) return true;
+        if (this.isHost) return true;
+        if (typeof m === 'undefined' || !m.pos) return true;
+
+        let targetPlayerId = null;
+        let tx = null;
+        let ty = null;
+
+        if (attacker && attacker.seePlayer) {
+            if (attacker.seePlayer.playerId) targetPlayerId = attacker.seePlayer.playerId;
+            if (
+                attacker.seePlayer.position &&
+                isFinite(attacker.seePlayer.position.x) &&
+                isFinite(attacker.seePlayer.position.y)
+            ) {
+                tx = attacker.seePlayer.position.x;
+                ty = attacker.seePlayer.position.y;
+            }
+        }
+
+        if (
+            explicitTargetPos &&
+            isFinite(explicitTargetPos.x) &&
+            isFinite(explicitTargetPos.y)
+        ) {
+            tx = explicitTargetPos.x;
+            ty = explicitTargetPos.y;
+        }
+
+        if (targetPlayerId && this.playerId) {
+            return targetPlayerId === this.playerId;
+        }
+
+        // Fallback when targetId is unknown: approximate by host-synced target position.
+        if (isFinite(tx) && isFinite(ty)) {
+            const dx = tx - m.pos.x;
+            const dy = ty - m.pos.y;
+            return (dx * dx + dy * dy) < (70 * 70);
+        }
+
+        return true;
+    },
     
     // Start game (host only)
     async startGame() {
@@ -3455,8 +3500,9 @@ const multiplayer = {
                         stroke: m.stroke || '#000000',
                         seePlayerYes: m.seePlayer ? m.seePlayer.yes : false,
                         seePlayerRecall: m.seePlayer ? m.seePlayer.recall : false,
-                        targetX: (m.seePlayer && m.seePlayer.yes && m.seePlayer.position) ? m.seePlayer.position.x : null,
-                        targetY: (m.seePlayer && m.seePlayer.yes && m.seePlayer.position) ? m.seePlayer.position.y : null,
+                        targetX: (m.seePlayer && m.seePlayer.position && isFinite(m.seePlayer.position.x)) ? m.seePlayer.position.x : null,
+                        targetY: (m.seePlayer && m.seePlayer.position && isFinite(m.seePlayer.position.y)) ? m.seePlayer.position.y : null,
+                        targetPlayerId: (m.seePlayer && m.seePlayer.playerId) ? m.seePlayer.playerId : null,
                         showHealthBar: m.showHealthBar !== false,
                         maxHealth: isFinite(m.maxHealth) ? m.maxHealth : 1,
                         shield: !!m.shield,
@@ -3822,6 +3868,9 @@ const multiplayer = {
                     if (mob[targetIndex].seePlayer) {
                         mob[targetIndex].seePlayer.yes = mobData.seePlayerYes || false;
                         mob[targetIndex].seePlayer.recall = (mobData.seePlayerRecall !== undefined) ? mobData.seePlayerRecall : (mobData.seePlayerYes || false);
+                        if (mobData.targetPlayerId !== undefined) {
+                            mob[targetIndex].seePlayer.playerId = mobData.targetPlayerId || null;
+                        }
                         if (isFinite(mobData.health) && isFinite(mobData.maxHealth) && mobData.health < mobData.maxHealth) {
                             mob[targetIndex].seePlayer.recall = true;
                         }
@@ -3905,6 +3954,7 @@ const multiplayer = {
                         ghost.seePlayer = {
                             recall: (mobData.seePlayerRecall !== undefined) ? mobData.seePlayerRecall : (mobData.seePlayerYes || false),
                             yes: mobData.seePlayerYes || false,
+                            playerId: mobData.targetPlayerId || null,
                             position: {
                                 x: (mobData.targetX !== null && mobData.targetX !== undefined) ? mobData.targetX : (mobData.x || 0),
                                 y: (mobData.targetY !== null && mobData.targetY !== undefined) ? mobData.targetY : (mobData.y || 0)
@@ -3928,13 +3978,10 @@ const multiplayer = {
                             this.health = Math.max(0, this.health - dmg);
                         };
                         ghost.locatePlayer = function() { 
-                            // Simple player tracking for ghost mobs
+                            // Keep host-synced target info; do not retarget to local client.
                             if (this.seePlayer) {
-                                this.seePlayer.recall = true;
-                                this.seePlayer.yes = true;
-                                if (typeof m !== 'undefined' && m.pos) {
-                                    this.seePlayer.position = { x: m.pos.x, y: m.pos.y };
-                                }
+                                if (this.seePlayer.recall === undefined) this.seePlayer.recall = true;
+                                if (this.seePlayer.yes === undefined) this.seePlayer.yes = true;
                             }
                         };
                         ghost.foundPlayer = function() { /* no-op on clients */ };

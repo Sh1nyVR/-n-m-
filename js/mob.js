@@ -249,6 +249,7 @@ const mobs = {
             seePlayer: {
                 yes: false,
                 recall: 0,
+                playerId: null,
                 position: {
                     x: xPos,
                     y: yPos
@@ -292,6 +293,15 @@ const mobs = {
                 }
                 return this.position;
             },
+            canHurtLocalPlayer(explicitTargetPos = null) {
+                if (typeof multiplayer !== 'undefined' && multiplayer.enabled && typeof multiplayer.shouldApplyMobPlayerDamage === 'function') {
+                    return multiplayer.shouldApplyMobPlayerDamage(this, explicitTargetPos);
+                }
+                return true;
+            },
+            shouldRenderTargetIndicators() {
+                return !(typeof multiplayer !== 'undefined' && multiplayer.enabled && !multiplayer.isHost);
+            },
             distanceToPlayer() {
                 const targetPos = this.getTargetPlayerPosition();
                 const targetX = targetPos.x;
@@ -333,12 +343,15 @@ const mobs = {
                     let closestDist = Infinity;
                     let closestX = player.position.x;
                     let closestY = player.position.y;
+                    let closestId = multiplayer.playerId || null;
                     
                     // Check local player
                     if (m.alive) {
                         const dx = player.position.x - this.position.x;
                         const dy = player.position.y - this.position.y;
                         closestDist = dx * dx + dy * dy;
+                    } else {
+                        closestId = null;
                     }
                     
                     // Check remote players
@@ -351,16 +364,19 @@ const mobs = {
                                 closestDist = dist;
                                 closestX = p.x;
                                 closestY = p.y;
+                                closestId = id;
                             }
                         }
                     }
                     
                     this.seePlayer.position.x = closestX;
                     this.seePlayer.position.y = closestY;
+                    this.seePlayer.playerId = closestId;
                 } else {
                     // Single player - use original logic
                     this.seePlayer.position.x = player.position.x;
                     this.seePlayer.position.y = player.position.y;
+                    this.seePlayer.playerId = null;
                 }
             },
             alertNearByMobs() {
@@ -469,7 +485,7 @@ const mobs = {
                 if (!this.seePlayer.recall) {
                     this.torque = this.lookTorque * this.inertia;
                     // Draw look cone only on host/single-player to avoid client-only ring artifacts.
-                    if (!(typeof multiplayer !== 'undefined' && multiplayer.enabled && !multiplayer.isHost)) {
+                    if (this.shouldRenderTargetIndicators()) {
                         const range = Math.PI * this.lookRange;
                         ctx.beginPath();
                         ctx.arc(this.position.x, this.position.y, this.radius * 2.5, this.angle - range, this.angle + range);
@@ -514,7 +530,7 @@ const mobs = {
                         const targetX = this.seePlayer.position.x;
                         const targetY = this.seePlayer.position.y;
                         // Check if targeting local player
-                        if (Math.abs(targetX - m.pos.x) < 50 && Math.abs(targetY - m.pos.y) < 50) {
+                        if (Math.abs(targetX - m.pos.x) < 50 && Math.abs(targetY - m.pos.y) < 50 && this.canHurtLocalPlayer({ x: targetX, y: targetY })) {
                             if (m.immuneCycle < m.cycle) m.damage(0.0003 * simulation.dmgScale);
                             if (m.energy > 0.1) m.energy -= 0.003
                         }
@@ -526,20 +542,26 @@ const mobs = {
                         ctx.strokeStyle = "rgb(255,0,170)";
                         ctx.stroke();
 
-                        ctx.beginPath();
-                        ctx.arc(targetX, targetY, 40, 0, 2 * Math.PI);
-                        ctx.fillStyle = "rgba(255,0,170,0.15)";
-                        ctx.fill();
+                        if (this.shouldRenderTargetIndicators()) {
+                            ctx.beginPath();
+                            ctx.arc(targetX, targetY, 40, 0, 2 * Math.PI);
+                            ctx.fillStyle = "rgba(255,0,170,0.15)";
+                            ctx.fill();
+                        }
 
                     }
-                    ctx.beginPath();
-                    ctx.arc(this.position.x, this.position.y, this.laserRange * 0.9, 0, 2 * Math.PI);
-                    ctx.strokeStyle = "rgba(255,0,170,0.5)";
-                    ctx.lineWidth = 1;
-                    ctx.stroke();
+                    if (this.shouldRenderTargetIndicators()) {
+                        ctx.beginPath();
+                        ctx.arc(this.position.x, this.position.y, this.laserRange * 0.9, 0, 2 * Math.PI);
+                        ctx.strokeStyle = "rgba(255,0,170,0.5)";
+                        ctx.lineWidth = 1;
+                        ctx.stroke();
+                    }
                     ctx.setLineDash([]);
-                    ctx.fillStyle = "rgba(255,0,170,0.03)";
-                    ctx.fill();
+                    if (this.shouldRenderTargetIndicators()) {
+                        ctx.fillStyle = "rgba(255,0,170,0.03)";
+                        ctx.fill();
+                    }
                 }
             },
             laser() {
@@ -604,7 +626,7 @@ const mobs = {
                     if (!m.isCloak) vertexCollision(this.position, look, [player]);
                     // hitting player
                     if (best.who === player) {
-                        if (m.immuneCycle < m.cycle) {
+                        if (m.immuneCycle < m.cycle && this.canHurtLocalPlayer()) {
                             const dmg = 0.0012 * simulation.dmgScale;
                             m.damage(dmg);
                             //draw damage
@@ -677,7 +699,7 @@ const mobs = {
                     }
                 } else {
                     this.torque = this.lookTorque * this.inertia;
-                    if (!(typeof multiplayer !== 'undefined' && multiplayer.enabled && !multiplayer.isHost)) {
+                    if (this.shouldRenderTargetIndicators()) {
                         //draw looking around arcs
                         const range = Math.PI * this.lookRange;
                         ctx.beginPath();
@@ -802,7 +824,7 @@ const mobs = {
                     
                     if (dist2 < 1000000) {
                         // Only apply force to local player if they're the target (within 50 units)
-                        if (Math.abs(targetX - m.pos.x) < 50 && Math.abs(targetY - m.pos.y) < 50) {
+                        if (Math.abs(targetX - m.pos.x) < 50 && Math.abs(targetY - m.pos.y) < 50 && this.canHurtLocalPlayer({ x: targetX, y: targetY })) {
                             const angle = Math.atan2(dy, dx);
                             player.force.x -= simulation.accelScale * 0.00113 * player.mass * Math.cos(angle) * (m.onGround ? 2 : 1);
                             player.force.y -= simulation.accelScale * 0.00084 * player.mass * Math.sin(angle);
@@ -815,10 +837,12 @@ const mobs = {
                         ctx.lineWidth = Math.min(60, this.radius * 2);
                         ctx.strokeStyle = "rgba(0,0,0,0.5)";
                         ctx.stroke();
-                        ctx.beginPath();
-                        ctx.arc(targetX, targetY, 40, 0, 2 * Math.PI);
-                        ctx.fillStyle = "rgba(0,0,0,0.3)";
-                        ctx.fill();
+                        if (this.shouldRenderTargetIndicators()) {
+                            ctx.beginPath();
+                            ctx.arc(targetX, targetY, 40, 0, 2 * Math.PI);
+                            ctx.fillStyle = "rgba(0,0,0,0.3)";
+                            ctx.fill();
+                        }
                     }
                 }
             },
@@ -1102,7 +1126,7 @@ const mobs = {
                     // Damage local player if in range
                     const localDist2 = Vector.magnitudeSquared(Vector.sub(this.position, player.position));
                     const explosionRadius = Math.min(Math.max(300 * Math.sqrt(mass) / 40, 100), 700);
-                    if (localDist2 < explosionRadius * explosionRadius && m.immuneCycle < m.cycle) {
+                    if (localDist2 < explosionRadius * explosionRadius && m.immuneCycle < m.cycle && this.canHurtLocalPlayer()) {
                         m.damage(Math.min(Math.max(0.02 * Math.sqrt(mass), 0.01), 0.35) * simulation.dmgScale);
                     }
                     // Note: Remote players handle their own explosion damage
