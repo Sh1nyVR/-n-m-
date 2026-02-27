@@ -488,8 +488,13 @@ const multiplayer = {
     
     // Get current player data
     getPlayerData() {
-        // Check if player exists and is in game
-        if (typeof player === 'undefined' || !player.position || !player.velocity) {
+        const hasLivePlayerState =
+            (typeof player !== 'undefined' && !!player && !!player.position && !!player.velocity) &&
+            (typeof playerBody !== 'undefined' && !!playerBody && !!playerBody.position) &&
+            (typeof m !== 'undefined' && !!m);
+
+        // Menu/lobby-safe fallback when game objects are not fully initialized yet.
+        if (!hasLivePlayerState) {
             console.log('Player not ready:', typeof player, player?.position, player?.velocity);
             return {
                 name: this.settings.name,
