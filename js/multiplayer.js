@@ -122,6 +122,7 @@ const multiplayer = {
     // Guards to prevent remote replay from re-broadcasting back to Firebase
     isApplyingRemoteBotSpawn: false,
     suppressBotAutoSync: false,
+    isSyncingGunFire: false,
 
     setListener(key, ref, handlers) {
         const prev = this.listeners[key];
@@ -1389,7 +1390,7 @@ const multiplayer = {
     
     // Sync laser effect
     syncLaser(where, whereEnd, dmg, reflections) {
-        if (!this.enabled || !this.lobbyId) return;
+        if (!this.enabled || !this.lobbyId || this.isSpawningRemote || this.isSyncingGunFire) return;
         
         const eventRef = database.ref(`lobbies/${this.lobbyId}/events`).push();
         eventRef.set({
@@ -1405,7 +1406,7 @@ const multiplayer = {
     
     // Sync foam bullet spawn
     syncFoam(position, velocity, radius) {
-        if (!this.enabled || !this.lobbyId) return;
+        if (!this.enabled || !this.lobbyId || this.isSpawningRemote || this.isSyncingGunFire) return;
         
         const eventRef = database.ref(`lobbies/${this.lobbyId}/events`).push();
         eventRef.set({
@@ -2385,8 +2386,15 @@ const multiplayer = {
         if (event.playerId === this.playerId) return; // Don't spawn our own foam
         
         if (typeof b !== 'undefined' && b.foam && event.position && event.velocity) {
-            // Spawn the foam bullet on this client
-            b.foam(event.position, event.velocity, event.radius || 10);
+            // Spawn on this client without re-broadcasting.
+            this.isSpawningRemote = true;
+            this.spawningRemoteOwnerId = event.playerId;
+            try {
+                b.foam(event.position, event.velocity, event.radius || 10);
+            } finally {
+                this.spawningRemoteOwnerId = null;
+                this.isSpawningRemote = false;
+            }
         }
     },
     
@@ -3819,6 +3827,9 @@ const multiplayer = {
                         }
                         if (mobData.targetX !== null && mobData.targetY !== null) {
                             mob[targetIndex].targetPos = { x: mobData.targetX, y: mobData.targetY };
+                            if (!mob[targetIndex].seePlayer.position) mob[targetIndex].seePlayer.position = { x: mobData.targetX, y: mobData.targetY };
+                            mob[targetIndex].seePlayer.position.x = mobData.targetX;
+                            mob[targetIndex].seePlayer.position.y = mobData.targetY;
                         }
                     }
                     // If host reports dead, trigger local death transition once
@@ -3891,7 +3902,14 @@ const multiplayer = {
                         ghost.health = isFinite(mobData.health) ? mobData.health : 1;
                         ghost.maxHealth = isFinite(mobData.maxHealth) ? mobData.maxHealth : 1;
                         ghost.radius = radius;
-                        ghost.seePlayer = { recall: (mobData.seePlayerRecall !== undefined) ? mobData.seePlayerRecall : (mobData.seePlayerYes || false), yes: mobData.seePlayerYes || false, position: { x: mobData.x || 0, y: mobData.y || 0 } };
+                        ghost.seePlayer = {
+                            recall: (mobData.seePlayerRecall !== undefined) ? mobData.seePlayerRecall : (mobData.seePlayerYes || false),
+                            yes: mobData.seePlayerYes || false,
+                            position: {
+                                x: (mobData.targetX !== null && mobData.targetX !== undefined) ? mobData.targetX : (mobData.x || 0),
+                                y: (mobData.targetY !== null && mobData.targetY !== undefined) ? mobData.targetY : (mobData.y || 0)
+                            }
+                        };
                         ghost.showHealthBar = mobData.showHealthBar !== false;
                         ghost.fill = mobData.fill || '#735084'; // Use actual fill or default purple
                         ghost.stroke = mobData.stroke || '#000000'; // Use actual stroke or black

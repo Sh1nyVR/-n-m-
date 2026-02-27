@@ -273,18 +273,37 @@ const mobs = {
             isSlowed: false,
             isStunned: false,
             seeAtDistance2: Infinity, //sqrt(4000000) = 2000 = max seeing range
+            getTargetPlayerPosition() {
+                if (
+                    this.seePlayer &&
+                    this.seePlayer.position &&
+                    isFinite(this.seePlayer.position.x) &&
+                    isFinite(this.seePlayer.position.y)
+                ) {
+                    return this.seePlayer.position;
+                }
+                if (
+                    typeof player !== 'undefined' &&
+                    player.position &&
+                    isFinite(player.position.x) &&
+                    isFinite(player.position.y)
+                ) {
+                    return player.position;
+                }
+                return this.position;
+            },
             distanceToPlayer() {
-                // Use the remembered player position if available
-                const targetX = (this.seePlayer.position && this.seePlayer.position.x) || player.position.x;
-                const targetY = (this.seePlayer.position && this.seePlayer.position.y) || player.position.y;
+                const targetPos = this.getTargetPlayerPosition();
+                const targetX = targetPos.x;
+                const targetY = targetPos.y;
                 const dx = this.position.x - targetX;
                 const dy = this.position.y - targetY;
                 return Math.sqrt(dx * dx + dy * dy);
             },
             distanceToPlayer2() {
-                // Use the remembered player position if available
-                const targetX = (this.seePlayer.position && this.seePlayer.position.x) || player.position.x;
-                const targetY = (this.seePlayer.position && this.seePlayer.position.y) || player.position.y;
+                const targetPos = this.getTargetPlayerPosition();
+                const targetX = targetPos.x;
+                const targetY = targetPos.y;
                 const dx = this.position.x - targetX;
                 const dy = this.position.y - targetY;
                 return dx * dx + dy * dy;
@@ -415,7 +434,8 @@ const mobs = {
                 }
             },
             isLookingAtPlayer(threshold) {
-                const diff = Vector.normalise(Vector.sub(player.position, this.position));
+                const targetPos = this.getTargetPlayerPosition();
+                const diff = Vector.normalise(Vector.sub(targetPos, this.position));
                 //make a vector for the mob's direction of length 1
                 const dir = {
                     x: Math.cos(this.angle),
@@ -448,19 +468,22 @@ const mobs = {
                 //if you don't recall player location rotate and draw to show where you are looking
                 if (!this.seePlayer.recall) {
                     this.torque = this.lookTorque * this.inertia;
-                    //draw
-                    const range = Math.PI * this.lookRange;
-                    ctx.beginPath();
-                    ctx.arc(this.position.x, this.position.y, this.radius * 2.5, this.angle - range, this.angle + range);
-                    ctx.arc(this.position.x, this.position.y, this.radius * 1.4, this.angle + range, this.angle - range, true);
-                    ctx.fillStyle = "rgba(0,0,0,0.07)";
-                    ctx.fill();
+                    // Draw look cone only on host/single-player to avoid client-only ring artifacts.
+                    if (!(typeof multiplayer !== 'undefined' && multiplayer.enabled && !multiplayer.isHost)) {
+                        const range = Math.PI * this.lookRange;
+                        ctx.beginPath();
+                        ctx.arc(this.position.x, this.position.y, this.radius * 2.5, this.angle - range, this.angle + range);
+                        ctx.arc(this.position.x, this.position.y, this.radius * 1.4, this.angle + range, this.angle - range, true);
+                        ctx.fillStyle = "rgba(0,0,0,0.07)";
+                        ctx.fill();
+                    }
                 }
             },
             mPosRange() {
+                const targetPos = this.getTargetPlayerPosition();
                 return {
-                    x: player.position.x, // + (Math.random() - 0.5) * 50,
-                    y: player.position.y + (Math.random() - 0.5) * 110
+                    x: targetPos.x, // + (Math.random() - 0.5) * 50,
+                    y: targetPos.y + (Math.random() - 0.5) * 110
                 };
             },
             // hacked() { //set this.hackedTarget variable before running this method
@@ -614,11 +637,12 @@ const mobs = {
                 ctx.fill();
 
                 if (!(simulation.cycle % this.seePlayerFreq)) {
+                    const targetPos = this.getTargetPlayerPosition();
                     if (
                         (this.seePlayer.recall || this.isLookingAtPlayer(this.lookRange)) &&
                         this.distanceToPlayer2() < this.seeAtDistance2 &&
-                        Matter.Query.ray(map, this.position, player.position).length === 0 &&
-                        Matter.Query.ray(body, this.position, player.position).length === 0 &&
+                        Matter.Query.ray(map, this.position, targetPos).length === 0 &&
+                        Matter.Query.ray(body, this.position, targetPos).length === 0 &&
                         !m.isCloak
                     ) {
                         this.foundPlayer();
@@ -630,7 +654,8 @@ const mobs = {
             springAttack() {
                 // set new values of the ends of the spring constraints
                 const stepRange = 600
-                if (this.seePlayer.recall && Matter.Query.ray(map, this.position, player.position).length === 0) {
+                const targetPos = this.getTargetPlayerPosition();
+                if (this.seePlayer.recall && Matter.Query.ray(map, this.position, targetPos).length === 0) {
                     if (!(simulation.cycle % (this.seePlayerFreq * 2))) {
                         const unit = Vector.normalise(Vector.sub(this.seePlayer.position, this.position))
                         const goal = Vector.add(this.position, Vector.mult(unit, stepRange))
@@ -652,13 +677,15 @@ const mobs = {
                     }
                 } else {
                     this.torque = this.lookTorque * this.inertia;
-                    //draw looking around arcs
-                    const range = Math.PI * this.lookRange;
-                    ctx.beginPath();
-                    ctx.arc(this.position.x, this.position.y, this.radius * 2.5, this.angle - range, this.angle + range);
-                    ctx.arc(this.position.x, this.position.y, this.radius * 1.4, this.angle + range, this.angle - range, true);
-                    ctx.fillStyle = "rgba(0,0,0,0.07)";
-                    ctx.fill();
+                    if (!(typeof multiplayer !== 'undefined' && multiplayer.enabled && !multiplayer.isHost)) {
+                        //draw looking around arcs
+                        const range = Math.PI * this.lookRange;
+                        ctx.beginPath();
+                        ctx.arc(this.position.x, this.position.y, this.radius * 2.5, this.angle - range, this.angle + range);
+                        ctx.arc(this.position.x, this.position.y, this.radius * 1.4, this.angle + range, this.angle - range, true);
+                        ctx.fillStyle = "rgba(0,0,0,0.07)";
+                        ctx.fill();
+                    }
                     //spring to random place on map
                     const vertexCollision = function(v1, v1End, domain) {
                         for (let i = 0; i < domain.length; ++i) {
@@ -888,7 +915,8 @@ const mobs = {
                 if (!this.seePlayer.recall) {
                     const newTarget = function(that) {
                         if (Math.random() < 0.0005) {
-                            that.searchTarget = player.position; //chance to target player
+                            const targetPos = that.getTargetPlayerPosition();
+                            that.searchTarget = { x: targetPos.x, y: targetPos.y }; //chance to target player
                         } else {
                             //target random body
                             that.searchTarget = map[Math.floor(Math.random() * (map.length - 1))].position;
@@ -1046,8 +1074,9 @@ const mobs = {
             // },
             turnToFacePlayer() {
                 //turn to face player
-                const dx = player.position.x - this.position.x;
-                const dy = -player.position.y + this.position.y;
+                const targetPos = this.getTargetPlayerPosition();
+                const dx = targetPos.x - this.position.x;
+                const dy = -targetPos.y + this.position.y;
                 const dist = this.distanceToPlayer();
                 const angle = this.angle + Math.PI / 2;
                 c = Math.cos(angle) * dx - Math.sin(angle) * dy;

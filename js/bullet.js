@@ -80,12 +80,18 @@ const b = {
     },
     fireWithAmmo() { //triggers after firing when you have ammo
         // Sync gun fire to multiplayer BEFORE firing (only if YOU are firing, not remote)
-        if (typeof multiplayer !== 'undefined' && multiplayer.enabled && b.guns[b.activeGun]) {
+        if (typeof multiplayer !== 'undefined' && multiplayer.enabled && !multiplayer.isSpawningRemote && b.guns[b.activeGun]) {
             console.log('🎯 LOCAL player firing:', b.guns[b.activeGun].name);
             multiplayer.syncGunFire(b.guns[b.activeGun].name, m.angle, m.pos, { crouch: m.crouch });
         }
         
-        b.guns[b.activeGun].fire();
+        const markGunFireContext = (typeof multiplayer !== 'undefined' && multiplayer.enabled);
+        if (markGunFireContext) multiplayer.isSyncingGunFire = true;
+        try {
+            b.guns[b.activeGun].fire();
+        } finally {
+            if (markGunFireContext) multiplayer.isSyncingGunFire = false;
+        }
         if (tech.isCrouchAmmo && m.crouch) {
             if (tech.isCrouchAmmo % 2) {
                 b.guns[b.activeGun].ammo--;
@@ -246,7 +252,9 @@ const b = {
                 minDmgSpeed: 10,
                 beforeDmg() {}, //this.endCycle = 0  //triggers despawn
                 onEnd() {},
-                ownerId: (typeof multiplayer !== 'undefined' && multiplayer.enabled) ? multiplayer.playerId : null
+                ownerId: (typeof multiplayer !== 'undefined' && multiplayer.enabled)
+                    ? ((multiplayer.isSpawningRemote && multiplayer.spawningRemoteOwnerId) ? multiplayer.spawningRemoteOwnerId : multiplayer.playerId)
+                    : null
             };
         } else {
             return {
@@ -264,7 +272,9 @@ const b = {
                 minDmgSpeed: 10,
                 beforeDmg() {}, //this.endCycle = 0  //triggers despawn
                 onEnd() {},
-                ownerId: (typeof multiplayer !== 'undefined' && multiplayer.enabled) ? multiplayer.playerId : null
+                ownerId: (typeof multiplayer !== 'undefined' && multiplayer.enabled)
+                    ? ((multiplayer.isSpawningRemote && multiplayer.spawningRemoteOwnerId) ? multiplayer.spawningRemoteOwnerId : multiplayer.playerId)
+                    : null
             };
         }
     },
@@ -1632,7 +1642,7 @@ const b = {
         }
         
         // Sync laser effect to multiplayer (but never rebroadcast remote replays)
-        if (typeof multiplayer !== 'undefined' && multiplayer.enabled && !multiplayer.isSpawningRemote) {
+        if (typeof multiplayer !== 'undefined' && multiplayer.enabled && !multiplayer.isSpawningRemote && !multiplayer.isSyncingGunFire) {
             multiplayer.syncLaser(where, whereEnd, dmg, reflections);
         }
     },
@@ -2324,7 +2334,9 @@ const b = {
             target: null,
             targetVertex: null,
             targetRelativePosition: null,
-            ownerId: (typeof multiplayer !== 'undefined' && multiplayer.enabled) ? multiplayer.playerId : null,
+            ownerId: (typeof multiplayer !== 'undefined' && multiplayer.enabled)
+                ? ((multiplayer.isSpawningRemote && multiplayer.spawningRemoteOwnerId) ? multiplayer.spawningRemoteOwnerId : multiplayer.playerId)
+                : null,
             beforeDmg(who) {
                 if (!this.target && who.alive) {
                     this.target = who;
@@ -2460,7 +2472,7 @@ const b = {
         Matter.Body.setVelocity(bullet[me], velocity);
         
         // Sync foam bullet to multiplayer
-        if (typeof multiplayer !== 'undefined' && multiplayer.enabled) {
+        if (typeof multiplayer !== 'undefined' && multiplayer.enabled && !multiplayer.isSpawningRemote && !multiplayer.isSyncingGunFire) {
             multiplayer.syncFoam(position, velocity, radius);
         }
     },
