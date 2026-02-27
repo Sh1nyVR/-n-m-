@@ -14,6 +14,8 @@ const firebaseConfig = {
 
 // Initialize Firebase (using global firebase object from CDN)
 let database;
+let auth;
+let authReadyPromise = null;
 
 function initFirebase() {
     if (typeof firebase === 'undefined') {
@@ -25,7 +27,23 @@ function initFirebase() {
         firebase.initializeApp(firebaseConfig);
     }
     database = firebase.database();
+    auth = (typeof firebase.auth === 'function') ? firebase.auth() : null;
     return true;
+}
+
+async function ensureFirebaseAuth() {
+    // If auth SDK is not loaded, continue without auth (for fully open rules).
+    if (!auth) return true;
+    if (auth.currentUser) return true;
+    if (!authReadyPromise) {
+        authReadyPromise = auth.signInAnonymously()
+            .then(() => true)
+            .catch((e) => {
+                console.error('Anonymous auth failed:', e);
+                return false;
+            });
+    }
+    return await authReadyPromise;
 }
 
 const multiplayer = {
@@ -172,6 +190,7 @@ const multiplayer = {
             const ok = this.init();
             if (!ok) throw new Error('Multiplayer init failed');
         }
+        await ensureFirebaseAuth();
         if (this.lobbyId) {
             try {
                 await database.ref(`lobbies/${this.lobbyId}/players/${this.playerId}`).remove();
@@ -202,6 +221,9 @@ const multiplayer = {
         
         await database.ref('lobbies/' + this.lobbyId).set(lobbyData).catch((e) => {
             console.error('Failed to create lobby at path:', 'lobbies/' + this.lobbyId, e);
+            if (e && e.code === 'PERMISSION_DENIED') {
+                console.error('Firebase rules denied createLobby write. Ensure Realtime Database rules allow this path and/or require authenticated users (anonymous auth enabled).');
+            }
             throw e;
         });
         this.hostId = this.playerId; // host is self
@@ -245,6 +267,7 @@ const multiplayer = {
             const ok = this.init();
             if (!ok) throw new Error('Multiplayer init failed');
         }
+        await ensureFirebaseAuth();
         if (this.lobbyId && this.lobbyId !== lobbyId) {
             try {
                 await database.ref(`lobbies/${this.lobbyId}/players/${this.playerId}`).remove();
@@ -310,6 +333,7 @@ const multiplayer = {
     
     // Get list of public lobbies
     async getPublicLobbies() {
+        await ensureFirebaseAuth();
         const lobbiesRef = database.ref('lobbies');
         const snapshot = await lobbiesRef.once('value');
         
